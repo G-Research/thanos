@@ -60,6 +60,7 @@ func main() {
 
 	cmds := map[string]setupFunc{}
 	registerSidecar(cmds, app, "sidecar")
+	registerInfluxSidecar(cmds, app, "influxdb")
 	registerStore(cmds, app, "store")
 	registerQuery(cmds, app, "query")
 	registerRule(cmds, app, "rule")

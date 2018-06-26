@@ -8,3 +8,6 @@ kube/.minikube
 
 # Ignore e2e working dirs.
 data/
+
+# ide
+.idea
