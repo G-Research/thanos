@@ -6,16 +6,25 @@ import (
 	"net/url"
 	"sync"
 
-	"github.com/go-kit/kit/log"
-	"github.com/improbable-eng/thanos/pkg/store/storepb"
-	"github.com/improbable-eng/thanos/pkg/tracing"
-	"github.com/prometheus/tsdb/labels"
-	"google.golang.org/grpc/codes"
-	status "google.golang.org/grpc/status"
-	"path"
-	errors "github.com/pkg/errors"
 	"encoding/json"
 	"math"
+	"path"
+
+	"bytes"
+
+	"fmt"
+
+	"strconv"
+
+	"github.com/go-kit/kit/log"
+	"github.com/improbable-eng/thanos/pkg/store/prompb"
+	"github.com/improbable-eng/thanos/pkg/store/storepb"
+	"github.com/improbable-eng/thanos/pkg/tracing"
+	"github.com/pkg/errors"
+	"github.com/prometheus/tsdb/chunkenc"
+	"github.com/prometheus/tsdb/labels"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // InfluxStore implements the store node API on top of the InfluxDB's HTTP API.
@@ -91,9 +100,197 @@ func (store *InfluxStore) Info(ctx context.Context, req *storepb.InfoRequest) (*
 	return res, nil
 }
 
-func (store *InfluxStore) Series(req *storepb.SeriesRequest, server storepb.Store_SeriesServer) error {
-	return status.Error(codes.Unimplemented, "not implemented")
+func matchString(matcher storepb.LabelMatcher, quoteChar string) string {
+	ret := matcher.Name
+	isRe := false
+	switch matcher.Type {
+	case storepb.LabelMatcher_EQ:
+		ret += " = " + quoteChar
+		break
+	case storepb.LabelMatcher_NEQ:
+		ret += " != " + quoteChar
+		break
+	case storepb.LabelMatcher_RE:
+		isRe = true
+		ret += " =~ /"
+		break
+	case storepb.LabelMatcher_NRE:
+		isRe = true
+		ret += " !~ /"
+		break
+	}
+	ret += matcher.Value
+	if isRe {
+		ret += "/"
+	} else {
+		ret += quoteChar
+	}
+	return ret
 }
+
+func (store *InfluxStore) Series(req *storepb.SeriesRequest, server storepb.Store_SeriesServer) error {
+	fmt.Printf("Received request for period %s -> %s\n", req.MinTime, req.MaxTime)
+	fmt.Printf("          max resolution of %s\n", req.MaxResolutionWindow)
+	fmt.Printf("   Requires aggregates:\n")
+	for _, agg := range req.Aggregates {
+		fmt.Printf("      -> %s\n", agg)
+	}
+	fmt.Printf("   Label matchers:\n")
+	for _, matcher := range req.Matchers {
+		fmt.Printf("      -> %s %s %s\n", matcher.Name, matcher.Type, matcher.Value)
+	}
+	fmt.Println()
+
+	// matcher slice keyed by name
+	matchers := make(map[string][]storepb.LabelMatcher)
+	for _, matcher := range req.Matchers {
+		if _, exists := matchers[matcher.Name]; !exists {
+			matchers[matcher.Name] = make([]storepb.LabelMatcher, 0)
+		}
+		matchers[matcher.Name] = append(matchers[matcher.Name], matcher)
+	}
+
+	// find our metric names if we weren't given them!
+	var haveAnyMetricNames bool
+	if _, haveAnyMetricNames = matchers["__name__"]; !haveAnyMetricNames {
+		q := "SHOW MEASUREMENTS WHERE"
+		sep := " "
+		for _, matcher := range req.Matchers {
+			q += sep + matchString(matcher, "\"")
+			sep = " AND "
+		}
+
+		d, err := influxQuery(store.base, q)
+		if err != nil {
+			return err
+		}
+
+		metrics := make([]storepb.LabelMatcher, 0)
+		if d.Results[0].Series != nil {
+			for _, values := range d.Results[0].Series[0].Values {
+				metric := values[0].(string)
+				fmt.Printf("   Auto-deduced metric name: %s\n", metric)
+				metrics = append(metrics, storepb.LabelMatcher{
+					Type:  storepb.LabelMatcher_EQ,
+					Name:  "__name__",
+					Value: metric,
+				})
+			}
+			matchers["__name__"] = metrics
+			haveAnyMetricNames = true
+		}
+	}
+
+	// righto, now we can construct our query
+	if haveAnyMetricNames {
+		// SELECT * FROM "host_unix_epoch" WHERE host='localhost' AND time >= 1529938383s AND time <= 1529938422s;
+		q := "SELECT * FROM "
+		sep := ""
+		for _, matcher := range matchers["__name__"] {
+			q += sep + "\"" + matcher.Value + "\""
+			sep = ", "
+		}
+		q += " WHERE time >= " + strconv.FormatInt(req.MinTime, 10) + "ms AND time <= " + strconv.FormatInt(req.MaxTime, 10) + "ms"
+		sep = " AND "
+		for k, v := range matchers {
+			if k == "__name__" {
+				continue
+			}
+			for _, matcher := range v {
+				q += sep + matchString(matcher, "'")
+			}
+		}
+		q += ";"
+		fmt.Printf("   Derived query: %s\n", q)
+
+		d, err := influxQuery(store.base, q)
+		if err != nil {
+			return status.Error(codes.Unknown, err.Error())
+		}
+
+		// now we got some data, feck knows what we do with it!
+
+		if d.Results[0].Series != nil {
+			for _, series := range d.Results[0].Series {
+				metric := series.Name
+				timeColumn := -1
+				valueColumn := -2
+				otherColumns := make(map[string]int)
+				for c, name := range series.Columns {
+					if name == "time" {
+						timeColumn = c
+					} else if name == "value" {
+						valueColumn = c
+					} else {
+						otherColumns[name] = c
+					}
+				}
+				// now we know where our data is
+				samples := make([]prompb.Sample, 0)
+				unpackedTags := false
+				tags := make(map[string]string)
+				for _, row := range series.Values {
+					if !unpackedTags {
+						for k, v := range otherColumns {
+							tags[k] = row[v].(string)
+						}
+						unpackedTags = true
+					}
+
+					samples = append(samples, prompb.Sample{Timestamp: int64(row[timeColumn].(float64)), Value: row[valueColumn].(float64)})
+				}
+
+				seriesLabels := make([]storepb.Label, len(tags))
+				i := 0
+				for k, v := range tags {
+					seriesLabels[i] = storepb.Label{Name: k, Value: v}
+					i++
+				}
+				seriesLabels = append(seriesLabels, storepb.Label{Name: "__name__", Value: metric})
+
+				fmt.Printf("Returning some data:   %v samples", len(samples))
+				fmt.Printf("Returning some labels: %v", seriesLabels)
+				enc, cb, err := encodeChunk(samples)
+				if err != nil {
+					fmt.Printf("Error encoding chunk: %s", err.Error())
+					return status.Error(codes.Unknown, err.Error())
+				}
+				resp := storepb.NewSeriesResponse(&storepb.Series{
+					Labels: seriesLabels,
+					Chunks: []storepb.AggrChunk{{
+						MinTime: int64(samples[0].Timestamp),
+						MaxTime: int64(samples[len(samples)-1].Timestamp),
+						Raw:     &storepb.Chunk{Type: enc, Data: cb},
+					}},
+				})
+				if err := server.Send(resp); err != nil {
+					fmt.Printf("Error sending response: %s", err.Error())
+					return err
+				}
+			}
+		} else {
+			fmt.Printf("Found no series?")
+		}
+
+	}
+
+	return nil
+}
+
+// encodeChunk translates the sample pairs into a chunk.
+func encodeChunk(ss []prompb.Sample) (storepb.Chunk_Encoding, []byte, error) {
+	c := chunkenc.NewXORChunk()
+
+	a, err := c.Appender()
+	if err != nil {
+		return 0, nil, err
+	}
+	for _, s := range ss {
+		a.Append(int64(s.Timestamp), float64(s.Value))
+	}
+	return storepb.Chunk_XOR, c.Bytes(), nil
+}
+
 func (store *InfluxStore) LabelNames(ctx context.Context, req *storepb.LabelNamesRequest) (*storepb.LabelNamesResponse, error) {
 	d, err := influxQuery(store.base, "show tag keys;")
 	if err != nil {
@@ -104,9 +301,9 @@ func (store *InfluxStore) LabelNames(ctx context.Context, req *storepb.LabelName
 
 	series := d.Results[0].Series
 	for _, metricResult := range series {
-		for v:=1; v<len(metricResult.Values); v++ {
-			label := metricResult.Values[v][0].(string)
-			names[label] = label
+		for v := 1; v < len(metricResult.Values); v++ {
+			tagKey := metricResult.Values[v][0].(string)
+			names[tagKey] = tagKey
 		}
 	}
 
@@ -118,23 +315,44 @@ func (store *InfluxStore) LabelNames(ctx context.Context, req *storepb.LabelName
 		i++
 	}
 
-
 	res := &storepb.LabelNamesResponse{
-		Names: keys,
+		Names:    keys,
 		Warnings: make([]string, 0),
 	}
 	return res, nil
 }
 func (store *InfluxStore) LabelValues(ctx context.Context, req *storepb.LabelValuesRequest) (*storepb.LabelValuesResponse, error) {
 
-	_, err := influxQuery(store.base, "show tag values with key = \"host\";")
+	d, err := influxQuery(store.base, "show tag values with key = \""+req.Label+"\";")
 	if err != nil {
 		return nil, err
 	}
 
-	// todo: unpack response
+	names := make(map[string]string)
 
-	return nil, status.Error(codes.Unimplemented, "not implemented")
+	series := d.Results[0].Series
+	for _, metricResult := range series {
+		for v := 1; v < len(metricResult.Values); v++ {
+			// index 0: key, index 1: value
+			tagValue := metricResult.Values[v][1].(string)
+			names[tagValue] = tagValue
+		}
+	}
+
+	values := make([]string, len(names))
+
+	i := 0
+	for k := range names {
+		values[i] = k
+		i++
+	}
+
+	res := &storepb.LabelValuesResponse{
+		Values:   values,
+		Warnings: make([]string, 0),
+	}
+
+	return res, nil
 }
 
 func allMetrics(base *url.URL) (*[]string, error) {
@@ -152,7 +370,6 @@ func allMetrics(base *url.URL) (*[]string, error) {
 	return &ret, nil
 }
 
-
 func minMaxTimestampByMetric(base *url.URL, metrics *[]string) (map[string][]int64, error) {
 
 	q := "select first(*) from"
@@ -162,7 +379,6 @@ func minMaxTimestampByMetric(base *url.URL, metrics *[]string) (map[string][]int
 		sep = ", "
 	}
 	q += ";"
-
 
 	d, err := influxQuery(base, q)
 	if err != nil {
@@ -176,7 +392,7 @@ func minMaxTimestampByMetric(base *url.URL, metrics *[]string) (map[string][]int
 		metric := metricResult.Name
 		var minTime, maxTime int64
 		minTime = math.MaxInt64
-		for v:=1; v<len(metricResult.Values); v++ {
+		for v := 1; v < len(metricResult.Values); v++ {
 			minTime = min(minTime, metricResult.Values[v][0].(int64))
 			maxTime = max(maxTime, metricResult.Values[v][0].(int64))
 		}
@@ -200,16 +416,15 @@ func max(a, b int64) int64 {
 	return b
 }
 
-
 type influxQueryResult struct {
 	Results []struct {
-		StatementId string
-		Series []struct {
-			Name string
+		StatementId int
+		Series      []struct {
+			Name    string
 			Columns []string
-			Values [][]interface{}
+			Values  [][]interface{}
 		}
-	} `json:"data"`
+	}
 }
 
 func influxQuery(base *url.URL, query string) (*influxQueryResult, error) {
@@ -234,12 +449,21 @@ func influxQuery(base *url.URL, query string) (*influxQueryResult, error) {
 	}
 	defer resp.Body.Close()
 
+	buf := new(bytes.Buffer)
+	buf.ReadFrom(resp.Body)
+	bodyContent := buf.String()
 
-	var d *influxQueryResult
-	if err := json.NewDecoder(resp.Body).Decode(d); err != nil {
+	//println("body: " + bodyContent)
+
+	var d influxQueryResult
+
+	if err := json.Unmarshal([]byte(bodyContent), &d); err != nil {
+		//fmt.Printf("err: %s\n", err.Error())
+		//fmt.Printf("d: %+v\n", d)
 		return nil, errors.Wrap(err, "decode response")
 	}
+	//fmt.Printf("d: %+v\n", d)
 
-	return d, nil
+	return &d, nil
 
 }
