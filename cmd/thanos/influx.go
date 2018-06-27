@@ -11,6 +11,8 @@ import (
 
 	"strings"
 
+	"path"
+
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
 	"github.com/improbable-eng/thanos/pkg/cluster"
@@ -92,42 +94,41 @@ func runInfluxSidecar(
 
 		// Start out with the full time range. The shipper will constrain it later.
 		// TODO(fabxc): minimum timestamp is never adjusted if shipping is disabled.
-		labels: influxLabels,
-		mint:   0,
-		maxt:   math.MaxInt64,
+		mint: 0,
+		maxt: math.MaxInt64,
 	}
 
 	// Setup all the concurrent groups.
 	{
-		promUp := prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "thanos_influxdb_sidecar_prometheus_up",
+		influxUp := prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "thanos_sidecar_influx_up",
 			Help: "Boolean indicator whether the sidecar can reach its InfluxDB peer.",
 		})
 		lastHeartbeat := prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "thanos_influxdb_sidecar_last_heartbeat_success_time_seconds",
 			Help: "Second timestamp of the last successful heartbeat.",
 		})
-		reg.MustRegister(promUp, lastHeartbeat)
+		reg.MustRegister(influxUp, lastHeartbeat)
 
-		if len(metadata.Labels()) == 0 {
+		if len(influxLabels) == 0 {
 			return errors.New("no external labels configured for InfluxDB server, uniquely identifying external labels must be configured")
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
 		g.Add(func() error {
-			// Blocking query of external labels before joining as a Source Peer into gossip.
-			// We retry infinitely until we reach and fetch labels from our Prometheus.
+			// Blocking ping before joining as a Source Peer into gossip.
+			// We retry infinitely until we reach InfluxDb
 			err := runutil.Retry(2*time.Second, ctx.Done(), func() error {
 				if err := metadata.Ping(ctx); err != nil {
 					level.Warn(logger).Log(
 						"msg", "failed to connect. Is InfluxDB running? Retrying",
 						"err", err,
 					)
-					promUp.Set(0)
+					influxUp.Set(0)
 					return err
 				}
 
-				promUp.Set(1)
+				influxUp.Set(1)
 				lastHeartbeat.Set(float64(time.Now().UnixNano()) / 1e9)
 				return nil
 			})
@@ -138,24 +139,23 @@ func runInfluxSidecar(
 			// New gossip cluster.
 			mint, maxt := metadata.Timestamps()
 			if err = peer.Join(cluster.PeerTypeSource, cluster.PeerMetadata{
-				Labels:  metadata.LabelsPB(),
+				Labels:  labelsPB(influxLabels),
 				MinTime: mint,
 				MaxTime: maxt,
 			}); err != nil {
 				return errors.Wrap(err, "join cluster")
 			}
 
-			// Periodically query the Prometheus config. We use this as a heartbeat as well as for updating
-			// the external labels we apply.
+			// Periodically ping Influx, we use this as a heartbeat.
 			return runutil.Repeat(30*time.Second, ctx.Done(), func() error {
 				iterCtx, iterCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer iterCancel()
 
 				if err := metadata.Ping(iterCtx); err != nil {
 					level.Warn(logger).Log("msg", "heartbeat failed", "err", err)
-					promUp.Set(0)
+					influxUp.Set(0)
 				} else {
-					promUp.Set(1)
+					influxUp.Set(1)
 					lastHeartbeat.Set(float64(time.Now().UnixNano()) / 1e9)
 				}
 
@@ -181,14 +181,14 @@ func runInfluxSidecar(
 
 		var client http.Client
 
-		promStore, err := store.NewPrometheusStore(
-			logger, &client, influxURL, metadata.Labels, metadata.Timestamps)
+		influxStore, err := store.NewInfluxStore(
+			logger, &client, influxURL, influxLabels, metadata.Timestamps)
 		if err != nil {
-			return errors.Wrap(err, "create Prometheus store")
+			return errors.Wrap(err, "create InfluxDB store")
 		}
 
 		s := grpc.NewServer(defaultGRPCServerOpts(logger, reg, tracer)...)
-		storepb.RegisterStoreServer(s, promStore)
+		storepb.RegisterStoreServer(s, influxStore)
 
 		g.Add(func() error {
 			level.Info(logger).Log("msg", "Listening for StoreAPI gRPC", "address", grpcBindAddr)
@@ -206,10 +206,9 @@ func runInfluxSidecar(
 type influxMetadata struct {
 	influxURL *url.URL
 
-	mtx    sync.Mutex
-	mint   int64
-	maxt   int64
-	labels labels.Labels
+	mtx  sync.Mutex
+	mint int64
+	maxt int64
 }
 
 func (s *influxMetadata) UpdateTimestamps(mint int64, maxt int64) error {
@@ -225,23 +224,35 @@ func (s *influxMetadata) Ping(ctx context.Context) error {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
-	// todo: ping url not working
+	return pingInflux(ctx, s.influxURL)
+}
+
+func pingInflux(ctx context.Context, base *url.URL) error {
+	u := *base
+	u.Path = path.Join(u.Path, "ping")
+
+	req, err := http.NewRequest("GET", u.String(), nil)
+	if err != nil {
+		return errors.Wrap(err, "create request")
+	}
+	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
+	if err != nil {
+		return errors.Wrapf(err, "request config against %s", u.String())
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 204 {
+		return errors.New("Unexpected status code from InfluxDB ping: " + resp.Status)
+	}
+
 	return nil
+
 }
 
-func (s *influxMetadata) Labels() labels.Labels {
-	s.mtx.Lock()
-	defer s.mtx.Unlock()
+func labelsPB(externalLabels labels.Labels) []storepb.Label {
 
-	return s.labels
-}
-
-func (s *influxMetadata) LabelsPB() []storepb.Label {
-	s.mtx.Lock()
-	defer s.mtx.Unlock()
-
-	lset := make([]storepb.Label, 0, len(s.labels))
-	for _, l := range s.labels {
+	lset := make([]storepb.Label, 0, len(externalLabels))
+	for _, l := range externalLabels {
 		lset = append(lset, storepb.Label{
 			Name:  l.Name,
 			Value: l.Value,
