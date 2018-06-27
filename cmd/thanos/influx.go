@@ -92,8 +92,7 @@ func runInfluxSidecar(
 	var metadata = &influxMetadata{
 		influxURL: influxURL,
 
-		// Start out with the full time range. The shipper will constrain it later.
-		// TODO(fabxc): minimum timestamp is never adjusted if shipping is disabled.
+		// TODO: minimum timestamp is never adjusted, the query in influx is complex
 		mint: 0,
 		maxt: math.MaxInt64,
 	}
