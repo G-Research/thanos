@@ -53,6 +53,7 @@ func NewInfluxStore(
 
 // Info returns store information about the InfluxDB instance.
 func (store *InfluxStore) Info(ctx context.Context, req *storepb.InfoRequest) (*storepb.InfoResponse, error) {
+	fmt.Printf("Received request for info\n")
 	labelSet := store.externalLabels
 
 	minTime, maxTime := store.timestamps()
@@ -263,6 +264,7 @@ func encodeChunk(ss []prompb.Sample) (storepb.Chunk_Encoding, []byte, error) {
 }
 
 func (store *InfluxStore) LabelNames(ctx context.Context, req *storepb.LabelNamesRequest) (*storepb.LabelNamesResponse, error) {
+	fmt.Printf("Received request for label names\n")
 	d, err := store.client.Query(ctx, store.database, "show tag keys;")
 	if err != nil {
 		return nil, err
@@ -287,6 +289,7 @@ func (store *InfluxStore) LabelNames(ctx context.Context, req *storepb.LabelName
 	}
 	keys[i] = "__name__"
 
+	fmt.Printf("Returned %d label names\n", len(keys))
 
 	res := &storepb.LabelNamesResponse{
 		Names:    keys,
@@ -294,7 +297,9 @@ func (store *InfluxStore) LabelNames(ctx context.Context, req *storepb.LabelName
 	}
 	return res, nil
 }
+
 func (store *InfluxStore) LabelValues(ctx context.Context, req *storepb.LabelValuesRequest) (*storepb.LabelValuesResponse, error) {
+	fmt.Printf("Received request for label values for label \"%s\"\n", req.Label)
 
 	var values []string
 	if req.Label == "__name__" {
@@ -329,6 +334,8 @@ func (store *InfluxStore) LabelValues(ctx context.Context, req *storepb.LabelVal
 			i++
 		}
 	}
+
+	fmt.Printf("Returned %d label values for name \"%s\"\n", len(values), req.Label)
 
 	res := &storepb.LabelValuesResponse{
 		Values:   values,
