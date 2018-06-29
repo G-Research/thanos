@@ -2,15 +2,8 @@ package store
 
 import (
 	"context"
-	"net/http"
 	"net/url"
 	"sync"
-
-	"encoding/json"
-	"math"
-	"path"
-
-	"bytes"
 
 	"fmt"
 
@@ -19,19 +12,18 @@ import (
 	"github.com/go-kit/kit/log"
 	"github.com/improbable-eng/thanos/pkg/store/prompb"
 	"github.com/improbable-eng/thanos/pkg/store/storepb"
-	"github.com/improbable-eng/thanos/pkg/tracing"
-	"github.com/pkg/errors"
 	"github.com/prometheus/tsdb/chunkenc"
 	"github.com/prometheus/tsdb/labels"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"github.com/improbable-eng/thanos/pkg/influx"
 )
 
 // InfluxStore implements the store node API on top of the InfluxDB's HTTP API.
 type InfluxStore struct {
 	logger         log.Logger
-	base           *url.URL
-	client         *http.Client
+	database       string
+	client         *influx.Client
 	buffers        sync.Pool
 	externalLabels labels.Labels
 	timestamps     func() (mint int64, maxt int64)
@@ -41,7 +33,7 @@ type InfluxStore struct {
 // to talk to InfluxDB.
 func NewInfluxStore(
 	logger log.Logger,
-	client *http.Client,
+	database string,
 	baseURL *url.URL,
 	externalLabels labels.Labels,
 	timestamps func() (mint int64, maxt int64),
@@ -49,15 +41,10 @@ func NewInfluxStore(
 	if logger == nil {
 		logger = log.NewNopLogger()
 	}
-	if client == nil {
-		client = &http.Client{
-			Transport: tracing.HTTPTripperware(logger, http.DefaultTransport),
-		}
-	}
 	p := &InfluxStore{
 		logger:         logger,
-		base:           baseURL,
-		client:         client,
+		database:       database,
+		client: 		influx.NewClient(baseURL),
 		externalLabels: externalLabels,
 		timestamps:     timestamps,
 	}
@@ -66,32 +53,16 @@ func NewInfluxStore(
 
 // Info returns store information about the InfluxDB instance.
 func (store *InfluxStore) Info(ctx context.Context, req *storepb.InfoRequest) (*storepb.InfoResponse, error) {
-	lset := store.externalLabels
-	// todo: should have this logic in the method commented here
-	//mint, maxt := store.timestamps()
+	labelSet := store.externalLabels
 
-	allMetrics, err := allMetrics(store.base)
-	if err != nil {
-		return nil, err
-	}
-	allTimes, err := minMaxTimestampByMetric(store.base, allMetrics)
-	if err != nil {
-		return nil, err
-	}
-
-	var minTime, maxTime int64
-	minTime = math.MaxInt64
-	for _, v := range allTimes {
-		minTime = min(minTime, v[0])
-		maxTime = max(maxTime, v[1])
-	}
+	minTime, maxTime := store.timestamps()
 
 	res := &storepb.InfoResponse{
 		MinTime: minTime,
 		MaxTime: maxTime,
-		Labels:  make([]storepb.Label, 0, len(lset)),
+		Labels:  make([]storepb.Label, 0, len(labelSet)),
 	}
-	for _, l := range lset {
+	for _, l := range labelSet {
 		res.Labels = append(res.Labels, storepb.Label{
 			Name:  l.Name,
 			Value: l.Value,
@@ -129,8 +100,8 @@ func matchString(matcher storepb.LabelMatcher, quoteChar string) string {
 }
 
 func (store *InfluxStore) Series(req *storepb.SeriesRequest, server storepb.Store_SeriesServer) error {
-	fmt.Printf("Received request for period %s -> %s\n", req.MinTime, req.MaxTime)
-	fmt.Printf("          max resolution of %s\n", req.MaxResolutionWindow)
+	fmt.Printf("Received request for period %d -> %d\n", req.MinTime, req.MaxTime)
+	fmt.Printf("          max resolution of %d\n", req.MaxResolutionWindow)
 	fmt.Printf("   Requires aggregates:\n")
 	for _, agg := range req.Aggregates {
 		fmt.Printf("      -> %s\n", agg)
@@ -160,7 +131,7 @@ func (store *InfluxStore) Series(req *storepb.SeriesRequest, server storepb.Stor
 			sep = " AND "
 		}
 
-		d, err := influxQuery(store.base, q)
+		d, err := store.client.Query(nil, store.database, q)
 		if err != nil {
 			return err
 		}
@@ -203,7 +174,7 @@ func (store *InfluxStore) Series(req *storepb.SeriesRequest, server storepb.Stor
 		q += ";"
 		fmt.Printf("   Derived query: %s\n", q)
 
-		d, err := influxQuery(store.base, q)
+		d, err := store.client.Query(nil, store.database, q)
 		if err != nil {
 			return status.Error(codes.Unknown, err.Error())
 		}
@@ -292,7 +263,7 @@ func encodeChunk(ss []prompb.Sample) (storepb.Chunk_Encoding, []byte, error) {
 }
 
 func (store *InfluxStore) LabelNames(ctx context.Context, req *storepb.LabelNamesRequest) (*storepb.LabelNamesResponse, error) {
-	d, err := influxQuery(store.base, "show tag keys;")
+	d, err := store.client.Query(ctx, store.database, "show tag keys;")
 	if err != nil {
 		return nil, err
 	}
@@ -323,7 +294,7 @@ func (store *InfluxStore) LabelNames(ctx context.Context, req *storepb.LabelName
 }
 func (store *InfluxStore) LabelValues(ctx context.Context, req *storepb.LabelValuesRequest) (*storepb.LabelValuesResponse, error) {
 
-	d, err := influxQuery(store.base, "show tag values with key = \""+req.Label+"\";")
+	d, err := store.client.Query(ctx, store.database, "show tag values with key = \""+req.Label+"\";")
 	if err != nil {
 		return nil, err
 	}
@@ -353,117 +324,4 @@ func (store *InfluxStore) LabelValues(ctx context.Context, req *storepb.LabelVal
 	}
 
 	return res, nil
-}
-
-func allMetrics(base *url.URL) (*[]string, error) {
-	d, err := influxQuery(base, "show measurements;")
-	if err != nil {
-		return nil, err
-	}
-
-	var ret = make([]string, len(d.Results[0].Series[0].Values))
-	results := d.Results[0].Series[0].Values
-	for i, metricArray := range results {
-		ret[i] = metricArray[0].(string)
-	}
-
-	return &ret, nil
-}
-
-func minMaxTimestampByMetric(base *url.URL, metrics *[]string) (map[string][]int64, error) {
-
-	q := "select first(*) from"
-	sep := " "
-	for _, metric := range *metrics {
-		q += sep + "\"" + metric + "\""
-		sep = ", "
-	}
-	q += ";"
-
-	d, err := influxQuery(base, q)
-	if err != nil {
-		return nil, err
-	}
-
-	ret := make(map[string][]int64)
-
-	series := d.Results[0].Series
-	for _, metricResult := range series {
-		metric := metricResult.Name
-		var minTime, maxTime int64
-		minTime = math.MaxInt64
-		for v := 1; v < len(metricResult.Values); v++ {
-			minTime = min(minTime, metricResult.Values[v][0].(int64))
-			maxTime = max(maxTime, metricResult.Values[v][0].(int64))
-		}
-		ret[metric] = []int64{minTime, maxTime}
-	}
-
-	return ret, nil
-}
-
-func min(a, b int64) int64 {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func max(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-type influxQueryResult struct {
-	Results []struct {
-		StatementId int
-		Series      []struct {
-			Name    string
-			Columns []string
-			Values  [][]interface{}
-		}
-	}
-}
-
-func influxQuery(base *url.URL, query string) (*influxQueryResult, error) {
-	// http://localhost:9041/query?pretty=true&db=opentsdb&epoch=ms&q=
-	u := *base
-	u.Path = path.Join(u.Path, "/query")
-
-	q := u.Query()
-	q.Add("pretty", "false")
-	q.Add("db", "opentsdb")
-	q.Add("epoch", "ms")
-	q.Add("q", query)
-	u.RawQuery = q.Encode()
-
-	req, err := http.NewRequest("GET", u.String(), nil)
-	if err != nil {
-		return nil, errors.Wrap(err, "create request")
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, errors.Wrapf(err, "request against %s", u.String())
-	}
-	defer resp.Body.Close()
-
-	buf := new(bytes.Buffer)
-	buf.ReadFrom(resp.Body)
-	bodyContent := buf.String()
-
-	//println("body: " + bodyContent)
-
-	var d influxQueryResult
-
-	if err := json.Unmarshal([]byte(bodyContent), &d); err != nil {
-		//fmt.Printf("err: %s\n", err.Error())
-		//fmt.Printf("d: %+v\n", d)
-		return nil, errors.Wrap(err, "decode response")
-	}
-	//fmt.Printf("d: %+v\n", d)
-
-	return &d, nil
-
 }

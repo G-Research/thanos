@@ -26,6 +26,7 @@ import (
 	"github.com/prometheus/tsdb/labels"
 	"google.golang.org/grpc"
 	"gopkg.in/alecthomas/kingpin.v2"
+	"github.com/improbable-eng/thanos/pkg/influx"
 )
 
 func registerInfluxSidecar(m map[string]setupFunc, app *kingpin.Application, name string) {
@@ -37,6 +38,8 @@ func registerInfluxSidecar(m map[string]setupFunc, app *kingpin.Application, nam
 
 	influxURL := cmd.Flag("influxdb.url", "URL at which to reach InfluxDB's API.").
 		Default("http://localhost:8086").URL()
+
+	influxDatabase := cmd.Flag("influxdb.database", "Influx database to query.").String()
 
 	m[name] = func(g *run.Group, logger log.Logger, reg *prometheus.Registry, tracer opentracing.Tracer, _ bool) error {
 
@@ -56,10 +59,10 @@ func registerInfluxSidecar(m map[string]setupFunc, app *kingpin.Application, nam
 			tracer,
 			*grpcBindAddr,
 			*httpBindAddr,
+			*influxDatabase,
 			*influxURL,
 			parsedLabels,
 			peer,
-			name,
 		)
 	}
 }
@@ -83,18 +86,19 @@ func runInfluxSidecar(
 	tracer opentracing.Tracer,
 	grpcBindAddr string,
 	httpBindAddr string,
+	influxDatabase string,
 	influxURL *url.URL,
 	influxLabels labels.Labels,
 	peer *cluster.Peer,
-	component string,
 ) error {
 
 	var metadata = &influxMetadata{
 		influxURL: influxURL,
+		influxClient: influx.NewClient(influxURL),
+		influxDatabase: influxDatabase,
 
-		// TODO: minimum timestamp is never adjusted, the query in influx is complex
-		mint: 0,
-		maxt: math.MaxInt64,
+		minTimestamp: 0,
+		maxTimestamp: math.MaxInt64,
 	}
 
 	// Setup all the concurrent groups.
@@ -136,6 +140,7 @@ func runInfluxSidecar(
 			}
 
 			// New gossip cluster.
+			metadata.UpdateTimestamps(ctx)
 			mint, maxt := metadata.Timestamps()
 			if err = peer.Join(cluster.PeerTypeSource, cluster.PeerMetadata{
 				Labels:  labelsPB(influxLabels),
@@ -145,15 +150,19 @@ func runInfluxSidecar(
 				return errors.Wrap(err, "join cluster")
 			}
 
-			// Periodically ping Influx, we use this as a heartbeat.
+			// Periodically update Influx timestamps, we also use this as a heartbeat.
 			return runutil.Repeat(30*time.Second, ctx.Done(), func() error {
-				iterCtx, iterCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				// todo(eswdd) not sure if 30s is enough on a large instance
+				iterCtx, iterCancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer iterCancel()
 
-				if err := metadata.Ping(iterCtx); err != nil {
-					level.Warn(logger).Log("msg", "heartbeat failed", "err", err)
+				if err := metadata.UpdateTimestamps(iterCtx); err != nil {
+					level.Warn(logger).Log("msg", "timestamp update failed", "err", err)
 					influxUp.Set(0)
 				} else {
+					minTimestamp, maxTimestamp := metadata.Timestamps()
+					peer.SetTimestamps(minTimestamp, maxTimestamp)
+
 					influxUp.Set(1)
 					lastHeartbeat.Set(float64(time.Now().UnixNano()) / 1e9)
 				}
@@ -178,10 +187,8 @@ func runInfluxSidecar(
 		}
 		logger := log.With(logger, "component", "store")
 
-		var client http.Client
-
 		influxStore, err := store.NewInfluxStore(
-			logger, &client, influxURL, influxLabels, metadata.Timestamps)
+			logger, influxDatabase, influxURL, influxLabels, metadata.Timestamps)
 		if err != nil {
 			return errors.Wrap(err, "create InfluxDB store")
 		}
@@ -198,24 +205,42 @@ func runInfluxSidecar(
 		})
 	}
 
-	level.Info(logger).Log("msg", "starting sidecar", "peer", peer.Name())
+	level.Info(logger).Log("msg", "starting InfluxDB sidecar", "peer", peer.Name())
 	return nil
 }
 
 type influxMetadata struct {
-	influxURL *url.URL
+	influxURL      *url.URL
+	influxClient   *influx.Client
+	influxDatabase string
 
-	mtx  sync.Mutex
-	mint int64
-	maxt int64
+	mtx          sync.Mutex
+	minTimestamp int64
+	maxTimestamp int64
 }
 
-func (s *influxMetadata) UpdateTimestamps(mint int64, maxt int64) error {
+func (s *influxMetadata) UpdateTimestamps(ctx context.Context) error {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
-	s.mint = mint
-	s.maxt = maxt
+	allMetrics, err := s.influxClient.AllMetrics(ctx, s.influxDatabase)
+	if err != nil {
+		return err
+	}
+	allTimes, err := s.minTimestampByMetric(ctx, allMetrics)
+	if err != nil {
+		return err
+	}
+
+	var minTime int64
+	minTime = math.MaxInt64
+	for _, v := range allTimes {
+		minTime = min(minTime, v)
+	}
+
+	s.minTimestamp = minTime
+	// hardcode this because we expect it to be written to all the time
+	s.maxTimestamp = math.MaxInt64
 	return nil
 }
 
@@ -264,5 +289,44 @@ func (s *influxMetadata) Timestamps() (mint int64, maxt int64) {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
-	return s.mint, s.maxt
+	return s.minTimestamp, s.maxTimestamp
+}
+
+
+func (s *influxMetadata) minTimestampByMetric(ctx context.Context, metrics *[]string) (map[string]int64, error) {
+
+	q := "select first(*) from"
+	sep := " "
+	for _, metric := range *metrics {
+		q += sep + "\"" + metric + "\""
+		sep = ", "
+	}
+	q += ";"
+
+	d, err := s.influxClient.Query(ctx, s.influxDatabase, q)
+	if err != nil {
+		return nil, err
+	}
+
+	ret := make(map[string]int64)
+
+	series := d.Results[0].Series
+	for _, metricResult := range series {
+		metric := metricResult.Name
+		var minTime int64
+		minTime = math.MaxInt64
+		for v := 1; v < len(metricResult.Values); v++ {
+			minTime = min(minTime, metricResult.Values[v][0].(int64))
+		}
+		ret[metric] = minTime
+	}
+
+	return ret, nil
+}
+
+func min(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
 }
