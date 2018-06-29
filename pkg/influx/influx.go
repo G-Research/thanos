@@ -30,7 +30,6 @@ type QueryResult struct {
 }
 
 func (c *Client) Query(ctx context.Context, db string, query string) (*QueryResult, error) {
-	// http://localhost:9041/query?pretty=true&db=opentsdb&epoch=ms&q=
 	u := c.baseUrl
 	u.Path = path.Join(u.Path, "/query")
 

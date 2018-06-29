@@ -278,13 +278,15 @@ func (store *InfluxStore) LabelNames(ctx context.Context, req *storepb.LabelName
 		}
 	}
 
-	keys := make([]string, len(names))
+	keys := make([]string, len(names)+1)
 
 	i := 0
 	for k := range names {
 		keys[i] = k
 		i++
 	}
+	keys[i] = "__name__"
+
 
 	res := &storepb.LabelNamesResponse{
 		Names:    keys,
@@ -294,28 +296,38 @@ func (store *InfluxStore) LabelNames(ctx context.Context, req *storepb.LabelName
 }
 func (store *InfluxStore) LabelValues(ctx context.Context, req *storepb.LabelValuesRequest) (*storepb.LabelValuesResponse, error) {
 
-	d, err := store.client.Query(ctx, store.database, "show tag values with key = \""+req.Label+"\";")
-	if err != nil {
-		return nil, err
-	}
-
-	names := make(map[string]string)
-
-	series := d.Results[0].Series
-	for _, metricResult := range series {
-		for v := 1; v < len(metricResult.Values); v++ {
-			// index 0: key, index 1: value
-			tagValue := metricResult.Values[v][1].(string)
-			names[tagValue] = tagValue
+	var values []string
+	if req.Label == "__name__" {
+		var err error
+		valuesPtr, err := store.client.AllMetrics(ctx, store.database)
+		if err != nil {
+			return nil, err
 		}
-	}
+		values = *valuesPtr
+	} else {
+		d, err := store.client.Query(ctx, store.database, "show tag values with key = \""+req.Label+"\";")
+		if err != nil {
+			return nil, err
+		}
 
-	values := make([]string, len(names))
+		names := make(map[string]string)
 
-	i := 0
-	for k := range names {
-		values[i] = k
-		i++
+		series := d.Results[0].Series
+		for _, metricResult := range series {
+			for v := 1; v < len(metricResult.Values); v++ {
+				// index 0: key, index 1: value
+				tagValue := metricResult.Values[v][1].(string)
+				names[tagValue] = tagValue
+			}
+		}
+
+		values = make([]string, len(names))
+
+		i := 0
+		for k := range names {
+			values[i] = k
+			i++
+		}
 	}
 
 	res := &storepb.LabelValuesResponse{
