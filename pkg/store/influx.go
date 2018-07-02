@@ -10,13 +10,13 @@ import (
 	"strconv"
 
 	"github.com/go-kit/kit/log"
+	"github.com/improbable-eng/thanos/pkg/influx"
 	"github.com/improbable-eng/thanos/pkg/store/prompb"
 	"github.com/improbable-eng/thanos/pkg/store/storepb"
 	"github.com/prometheus/tsdb/chunkenc"
 	"github.com/prometheus/tsdb/labels"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"github.com/improbable-eng/thanos/pkg/influx"
 )
 
 // InfluxStore implements the store node API on top of the InfluxDB's HTTP API.
@@ -44,7 +44,7 @@ func NewInfluxStore(
 	p := &InfluxStore{
 		logger:         logger,
 		database:       database,
-		client: 		influx.NewClient(baseURL),
+		client:         influx.NewClient(*baseURL),
 		externalLabels: externalLabels,
 		timestamps:     timestamps,
 	}
@@ -69,6 +69,7 @@ func (store *InfluxStore) Info(ctx context.Context, req *storepb.InfoRequest) (*
 			Value: l.Value,
 		})
 	}
+	fmt.Printf("Returned minTime=%d, maxTime=%d, labels=%v\n", minTime, maxTime, res.Labels)
 	return res, nil
 }
 
@@ -220,11 +221,11 @@ func (store *InfluxStore) Series(req *storepb.SeriesRequest, server storepb.Stor
 				}
 				seriesLabels = append(seriesLabels, storepb.Label{Name: "__name__", Value: metric})
 
-				fmt.Printf("Returning some data:   %v samples", len(samples))
-				fmt.Printf("Returning some labels: %v", seriesLabels)
+				fmt.Printf("Returning some data:   %v samples\n", len(samples))
+				fmt.Printf("Returning some labels: %v\n", seriesLabels)
 				enc, cb, err := encodeChunk(samples)
 				if err != nil {
-					fmt.Printf("Error encoding chunk: %s", err.Error())
+					fmt.Printf("Error encoding chunk: %s\n", err.Error())
 					return status.Error(codes.Unknown, err.Error())
 				}
 				resp := storepb.NewSeriesResponse(&storepb.Series{
@@ -236,12 +237,12 @@ func (store *InfluxStore) Series(req *storepb.SeriesRequest, server storepb.Stor
 					}},
 				})
 				if err := server.Send(resp); err != nil {
-					fmt.Printf("Error sending response: %s", err.Error())
+					fmt.Printf("Error sending response: %s\n", err.Error())
 					return err
 				}
 			}
 		} else {
-			fmt.Printf("Found no series?")
+			fmt.Printf("Found no series?\n")
 		}
 
 	}

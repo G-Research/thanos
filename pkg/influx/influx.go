@@ -1,20 +1,23 @@
 package influx
 
 import (
-	"net/url"
-	"github.com/pkg/errors"
-	"net/http"
 	"bytes"
-	"encoding/json"
-	"path"
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/url"
+	"path"
+
+	"fmt"
+
+	"github.com/pkg/errors"
 )
 
 type Client struct {
-	baseUrl *url.URL
+	baseUrl url.URL
 }
 
-func NewClient(baseUrl *url.URL) *Client {
+func NewClient(baseUrl url.URL) *Client {
 	return &Client{baseUrl: baseUrl}
 }
 
@@ -62,7 +65,10 @@ func (c *Client) Query(ctx context.Context, db string, query string) (*QueryResu
 	var d QueryResult
 
 	if err := json.Unmarshal([]byte(bodyContent), &d); err != nil {
-		//fmt.Printf("err: %s\n", err.Error())
+		fmt.Printf("err:   %s\n", err.Error())
+		fmt.Printf("body:  %s\n", bodyContent)
+		fmt.Printf("path:  %s\n", u.Path)
+		fmt.Printf("query: %s\n", u.RawQuery)
 		//fmt.Printf("d: %+v\n", d)
 		return nil, errors.Wrap(err, "decode response")
 	}
@@ -78,7 +84,12 @@ func (c *Client) AllMetrics(ctx context.Context, influxDatabase string) (*[]stri
 		return nil, err
 	}
 
-	var ret = make([]string, len(d.Results[0].Series[0].Values))
+	if len(d.Results) == 0 || len(d.Results[0].Series) == 0 {
+		ret := make([]string, 0)
+		return &ret, nil
+	}
+
+	ret := make([]string, len(d.Results[0].Series[0].Values))
 	results := d.Results[0].Series[0].Values
 	for i, metricArray := range results {
 		ret[i] = metricArray[0].(string)

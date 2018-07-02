@@ -13,9 +13,12 @@ import (
 
 	"path"
 
+	"fmt"
+
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
 	"github.com/improbable-eng/thanos/pkg/cluster"
+	"github.com/improbable-eng/thanos/pkg/influx"
 	"github.com/improbable-eng/thanos/pkg/runutil"
 	"github.com/improbable-eng/thanos/pkg/store"
 	"github.com/improbable-eng/thanos/pkg/store/storepb"
@@ -26,7 +29,6 @@ import (
 	"github.com/prometheus/tsdb/labels"
 	"google.golang.org/grpc"
 	"gopkg.in/alecthomas/kingpin.v2"
-	"github.com/improbable-eng/thanos/pkg/influx"
 )
 
 func registerInfluxSidecar(m map[string]setupFunc, app *kingpin.Application, name string) {
@@ -93,8 +95,8 @@ func runInfluxSidecar(
 ) error {
 
 	var metadata = &influxMetadata{
-		influxURL: influxURL,
-		influxClient: influx.NewClient(influxURL),
+		influxURL:      influxURL,
+		influxClient:   influx.NewClient(*influxURL),
 		influxDatabase: influxDatabase,
 
 		minTimestamp: 0,
@@ -223,24 +225,31 @@ func (s *influxMetadata) UpdateTimestamps(ctx context.Context) error {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
+	fmt.Printf("Updating timestamps...\n")
+
 	allMetrics, err := s.influxClient.AllMetrics(ctx, s.influxDatabase)
 	if err != nil {
 		return err
 	}
+	fmt.Printf("Received %d metrics\n", len(*allMetrics))
+
 	allTimes, err := s.minTimestampByMetric(ctx, allMetrics)
 	if err != nil {
 		return err
 	}
+	fmt.Printf("Received %d minTimes\n", len(allTimes))
 
 	var minTime int64
 	minTime = math.MaxInt64
-	for _, v := range allTimes {
+	for k, v := range allTimes {
+		fmt.Printf("Min time for %s is %d\n", k, v)
 		minTime = min(minTime, v)
 	}
 
 	s.minTimestamp = minTime
 	// hardcode this because we expect it to be written to all the time
 	s.maxTimestamp = math.MaxInt64
+	fmt.Printf("Calculated minTime=%d and maxTime=%d\n", minTime, math.MaxInt64)
 	return nil
 }
 
@@ -292,7 +301,6 @@ func (s *influxMetadata) Timestamps() (mint int64, maxt int64) {
 	return s.minTimestamp, s.maxTimestamp
 }
 
-
 func (s *influxMetadata) minTimestampByMetric(ctx context.Context, metrics *[]string) (map[string]int64, error) {
 
 	q := "select first(*) from"
@@ -315,8 +323,10 @@ func (s *influxMetadata) minTimestampByMetric(ctx context.Context, metrics *[]st
 		metric := metricResult.Name
 		var minTime int64
 		minTime = math.MaxInt64
-		for v := 1; v < len(metricResult.Values); v++ {
-			minTime = min(minTime, metricResult.Values[v][0].(int64))
+		for v := 0; v < len(metricResult.Values); v++ {
+			firstTime := int64(metricResult.Values[v][0].(float64))
+			fmt.Printf("Found a first value for %s: %d\n", metric, firstTime)
+			minTime = min(minTime, firstTime)
 		}
 		ret[metric] = minTime
 	}
