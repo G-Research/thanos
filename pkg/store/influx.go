@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/go-kit/kit/log"
+	"github.com/go-kit/kit/log/level"
 	"github.com/improbable-eng/thanos/pkg/influx"
 	"github.com/improbable-eng/thanos/pkg/store/prompb"
 	"github.com/improbable-eng/thanos/pkg/store/storepb"
@@ -44,7 +45,7 @@ func NewInfluxStore(
 	p := &InfluxStore{
 		logger:         logger,
 		database:       database,
-		client:         influx.NewClient(*baseURL),
+		client:         influx.NewClient(logger, *baseURL),
 		externalLabels: externalLabels,
 		timestamps:     timestamps,
 	}
@@ -53,7 +54,7 @@ func NewInfluxStore(
 
 // Info returns store information about the InfluxDB instance.
 func (store *InfluxStore) Info(ctx context.Context, req *storepb.InfoRequest) (*storepb.InfoResponse, error) {
-	fmt.Printf("Received request for info\n")
+	level.Debug(store.logger).Log("msg", "Received request for info")
 	labelSet := store.externalLabels
 
 	minTime, maxTime := store.timestamps()
@@ -69,7 +70,8 @@ func (store *InfluxStore) Info(ctx context.Context, req *storepb.InfoRequest) (*
 			Value: l.Value,
 		})
 	}
-	fmt.Printf("Returned minTime=%d, maxTime=%d, labels=%v\n", minTime, maxTime, res.Labels)
+	level.Debug(store.logger).Log(
+		"msg", "Info results", "minTime", minTime, "maxTime", maxTime, "labels", fmt.Sprintf("%v", res.Labels))
 	return res, nil
 }
 
@@ -102,17 +104,13 @@ func matchString(matcher storepb.LabelMatcher, quoteChar string) string {
 }
 
 func (store *InfluxStore) Series(req *storepb.SeriesRequest, server storepb.Store_SeriesServer) error {
-	fmt.Printf("Received request for period %d -> %d\n", req.MinTime, req.MaxTime)
-	fmt.Printf("          max resolution of %d\n", req.MaxResolutionWindow)
-	fmt.Printf("   Requires aggregates:\n")
-	for _, agg := range req.Aggregates {
-		fmt.Printf("      -> %s\n", agg)
-	}
-	fmt.Printf("   Label matchers:\n")
-	for _, matcher := range req.Matchers {
-		fmt.Printf("      -> %s %s %s\n", matcher.Name, matcher.Type, matcher.Value)
-	}
-	fmt.Println()
+	level.Debug(store.logger).Log(
+		"msg", "Received request for series",
+		"minTime", req.MinTime,
+		"maxTime", req.MaxTime,
+		"maxResolution", req.MaxResolutionWindow,
+		"aggregates", fmt.Sprintf("%v", req.Aggregates),
+		"matchers", fmt.Sprintf("%v", req.Matchers))
 
 	// matcher slice keyed by name
 	matchers := make(map[string][]storepb.LabelMatcher)
@@ -126,23 +124,28 @@ func (store *InfluxStore) Series(req *storepb.SeriesRequest, server storepb.Stor
 	// find our metric names if we weren't given them!
 	var haveAnyMetricNames bool
 	if _, haveAnyMetricNames = matchers["__name__"]; !haveAnyMetricNames {
+		level.Debug(store.logger).Log("msg", "Received request with no metric name, trying to deduce possibilities")
 		q := "SHOW MEASUREMENTS WHERE"
 		sep := " "
 		for _, matcher := range req.Matchers {
-			q += sep + matchString(matcher, "\"")
+			q += sep + matchString(matcher, "'")
 			sep = " AND "
 		}
 
+		level.Debug(store.logger).Log("msg", "Querying influx for possible metric names", "query", q)
+
 		d, err := store.client.Query(nil, store.database, q)
 		if err != nil {
+			level.Warn(store.logger).Log("msg", "Error quering influx for possible metric names", "err", err)
 			return err
 		}
 
 		metrics := make([]storepb.LabelMatcher, 0)
 		if d.Results[0].Series != nil {
+			level.Debug(store.logger).Log("Found some possible metric names", "count", len(d.Results[0].Series[0].Values))
 			for _, values := range d.Results[0].Series[0].Values {
 				metric := values[0].(string)
-				fmt.Printf("   Auto-deduced metric name: %s\n", metric)
+				level.Debug(store.logger).Log("msg", "Auto-deduced metric name", "metric", metric)
 				metrics = append(metrics, storepb.LabelMatcher{
 					Type:  storepb.LabelMatcher_EQ,
 					Name:  "__name__",
@@ -174,7 +177,7 @@ func (store *InfluxStore) Series(req *storepb.SeriesRequest, server storepb.Stor
 			}
 		}
 		q += ";"
-		fmt.Printf("   Derived query: %s\n", q)
+		level.Debug(store.logger).Log("msg", "Derived query", "query", q)
 
 		d, err := store.client.Query(nil, store.database, q)
 		if err != nil {
@@ -221,11 +224,13 @@ func (store *InfluxStore) Series(req *storepb.SeriesRequest, server storepb.Stor
 				}
 				seriesLabels = append(seriesLabels, storepb.Label{Name: "__name__", Value: metric})
 
-				fmt.Printf("Returning some data:   %v samples\n", len(samples))
-				fmt.Printf("Returning some labels: %v\n", seriesLabels)
+				level.Debug(store.logger).Log(
+					"msg", "Returning a series",
+					"sampleCount", len(samples),
+					"labels", fmt.Sprintf("%v", seriesLabels))
 				enc, cb, err := encodeChunk(samples)
 				if err != nil {
-					fmt.Printf("Error encoding chunk: %s\n", err.Error())
+					level.Warn(store.logger).Log("msg", "Error encoding series chunk", "err", err)
 					return status.Error(codes.Unknown, err.Error())
 				}
 				resp := storepb.NewSeriesResponse(&storepb.Series{
@@ -237,12 +242,12 @@ func (store *InfluxStore) Series(req *storepb.SeriesRequest, server storepb.Stor
 					}},
 				})
 				if err := server.Send(resp); err != nil {
-					fmt.Printf("Error sending response: %s\n", err.Error())
+					level.Warn(store.logger).Log("msg", "Error sending series", "err", err)
 					return err
 				}
 			}
 		} else {
-			fmt.Printf("Found no series?\n")
+			level.Debug(store.logger).Log("msg", "Empty response to query")
 		}
 
 	}
@@ -265,7 +270,8 @@ func encodeChunk(ss []prompb.Sample) (storepb.Chunk_Encoding, []byte, error) {
 }
 
 func (store *InfluxStore) LabelNames(ctx context.Context, req *storepb.LabelNamesRequest) (*storepb.LabelNamesResponse, error) {
-	fmt.Printf("Received request for label names\n")
+	level.Debug(store.logger).Log("msg", "Received request for label names")
+
 	d, err := store.client.Query(ctx, store.database, "show tag keys;")
 	if err != nil {
 		return nil, err
@@ -290,7 +296,7 @@ func (store *InfluxStore) LabelNames(ctx context.Context, req *storepb.LabelName
 	}
 	keys[i] = "__name__"
 
-	fmt.Printf("Returned %d label names\n", len(keys))
+	level.Debug(store.logger).Log("msg", "Returned label names", "count", len(keys))
 
 	res := &storepb.LabelNamesResponse{
 		Names:    keys,
@@ -300,7 +306,7 @@ func (store *InfluxStore) LabelNames(ctx context.Context, req *storepb.LabelName
 }
 
 func (store *InfluxStore) LabelValues(ctx context.Context, req *storepb.LabelValuesRequest) (*storepb.LabelValuesResponse, error) {
-	fmt.Printf("Received request for label values for label \"%s\"\n", req.Label)
+	level.Debug(store.logger).Log("msg", "Received request for label values", "label", req.Label)
 
 	var values []string
 	if req.Label == "__name__" {
@@ -336,8 +342,7 @@ func (store *InfluxStore) LabelValues(ctx context.Context, req *storepb.LabelVal
 		}
 	}
 
-	fmt.Printf("Returned %d label values for name \"%s\"\n", len(values), req.Label)
-
+	level.Debug(store.logger).Log("msg", "Returned label names", "count", len(values), "label", req.Label)
 	res := &storepb.LabelValuesResponse{
 		Values:   values,
 		Warnings: make([]string, 0),

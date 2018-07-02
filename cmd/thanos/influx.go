@@ -13,8 +13,6 @@ import (
 
 	"path"
 
-	"fmt"
-
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
 	"github.com/improbable-eng/thanos/pkg/cluster"
@@ -95,8 +93,10 @@ func runInfluxSidecar(
 ) error {
 
 	var metadata = &influxMetadata{
+		logger: logger,
+
 		influxURL:      influxURL,
-		influxClient:   influx.NewClient(*influxURL),
+		influxClient:   influx.NewClient(logger, *influxURL),
 		influxDatabase: influxDatabase,
 
 		minTimestamp: 0,
@@ -212,6 +212,8 @@ func runInfluxSidecar(
 }
 
 type influxMetadata struct {
+	logger log.Logger
+
 	influxURL      *url.URL
 	influxClient   *influx.Client
 	influxDatabase string
@@ -225,31 +227,31 @@ func (s *influxMetadata) UpdateTimestamps(ctx context.Context) error {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
-	fmt.Printf("Updating timestamps...\n")
+	level.Debug(s.logger).Log("msg", "Updating timestamps...")
 
 	allMetrics, err := s.influxClient.AllMetrics(ctx, s.influxDatabase)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Received %d metrics\n", len(*allMetrics))
+	level.Debug(s.logger).Log("msg", "Received metrics", "count", len(*allMetrics))
 
 	allTimes, err := s.minTimestampByMetric(ctx, allMetrics)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Received %d minTimes\n", len(allTimes))
+	level.Debug(s.logger).Log("msg", "Received minTimes", "count", len(allTimes))
 
 	var minTime int64
 	minTime = math.MaxInt64
 	for k, v := range allTimes {
-		fmt.Printf("Min time for %s is %d\n", k, v)
+		level.Debug(s.logger).Log("msg", "Min time found", "metric", k, "time", v)
 		minTime = min(minTime, v)
 	}
 
 	s.minTimestamp = minTime
 	// hardcode this because we expect it to be written to all the time
 	s.maxTimestamp = math.MaxInt64
-	fmt.Printf("Calculated minTime=%d and maxTime=%d\n", minTime, math.MaxInt64)
+	level.Debug(s.logger).Log("msg", "Completed updating timestamps", "minTime", minTime, "maxTime", math.MaxInt64)
 	return nil
 }
 
@@ -325,7 +327,7 @@ func (s *influxMetadata) minTimestampByMetric(ctx context.Context, metrics *[]st
 		minTime = math.MaxInt64
 		for v := 0; v < len(metricResult.Values); v++ {
 			firstTime := int64(metricResult.Values[v][0].(float64))
-			fmt.Printf("Found a first value for %s: %d\n", metric, firstTime)
+			level.Debug(s.logger).Log("msg", "Found a first value", "metric", metric, "time", firstTime)
 			minTime = min(minTime, firstTime)
 		}
 		ret[metric] = minTime

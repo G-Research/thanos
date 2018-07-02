@@ -8,17 +8,18 @@ import (
 	"net/url"
 	"path"
 
-	"fmt"
-
+	"github.com/go-kit/kit/log"
+	"github.com/go-kit/kit/log/level"
 	"github.com/pkg/errors"
 )
 
 type Client struct {
+	logger  log.Logger
 	baseUrl url.URL
 }
 
-func NewClient(baseUrl url.URL) *Client {
-	return &Client{baseUrl: baseUrl}
+func NewClient(logger log.Logger, baseUrl url.URL) *Client {
+	return &Client{logger: logger, baseUrl: baseUrl}
 }
 
 type QueryResult struct {
@@ -60,19 +61,12 @@ func (c *Client) Query(ctx context.Context, db string, query string) (*QueryResu
 	buf.ReadFrom(resp.Body)
 	bodyContent := buf.String()
 
-	//println("body: " + bodyContent)
-
 	var d QueryResult
 
 	if err := json.Unmarshal([]byte(bodyContent), &d); err != nil {
-		fmt.Printf("err:   %s\n", err.Error())
-		fmt.Printf("body:  %s\n", bodyContent)
-		fmt.Printf("path:  %s\n", u.Path)
-		fmt.Printf("query: %s\n", u.RawQuery)
-		//fmt.Printf("d: %+v\n", d)
+		level.Debug(c.logger).Log("msg", "Error processing response", "err", err, "body", bodyContent, "path", u.Path, "query", u.RawQuery)
 		return nil, errors.Wrap(err, "decode response")
 	}
-	//fmt.Printf("d: %+v\n", d)
 
 	return &d, nil
 
