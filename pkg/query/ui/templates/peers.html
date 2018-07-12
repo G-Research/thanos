@@ -1,0 +1,57 @@
+{{define "head"}}<!-- nix -->{{end}}
+
+{{define "content"}}
+  <div class="container-fluid">
+    <h2 id="peers">Peers</h2>
+    <table class="table table-condensed table-bordered table-striped table-hover">
+      <tbody>
+        <tr>
+            <th>My Peer Name</th>
+            <th>My Peer Address</th>
+            <th>My Peer Port</th>
+        </tr>
+        <tr>
+            <td>{{.Self.Name}}</td>
+            <td>{{.Self.Addr}}</td>
+            <td>{{.Self.Port}}</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>Members Alive: {{.MembersAlive}}</p>
+    <table class="table table-condensed table-bordered table-striped table-hover">
+      <tbody>
+        <tr>
+            <th>Peer Name</th>
+            <th>Peer Address</th></th>
+            <th>Peer Type</th>
+            <th>Store API</th>
+            <th>Query API</th>
+            <th>Labels</th>
+            <th>Min Time</th>
+            <th>Max Time</th>
+        </tr>
+        {{range $index, $peer := .Members }}
+        <tr>
+          <td>{{$peer.Name}}</td>
+          <td>{{$peer.Addr}}:{{$peer.Port}}</td>
+          {{ with (index $.PeerStates $peer.Name) }}
+          <td>{{ .Type }}</td>
+          <td>{{ .StoreAPIAddr }}</td>
+          <td>{{ .QueryAPIAddr }}</td>
+          <td>
+            {{range $labelIndex, $label := .Metadata.Labels }}
+              {{ if gt $labelIndex 0}}
+              <br/>
+              {{ end}}
+              {{ $label.Name }}={{ $label.Value }}
+            {{end}}
+          </td>
+          <td>{{ .Metadata.MinTime }}</td>
+          <td>{{ .Metadata.MaxTime }}</td>
+          {{ end }}
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+{{end}}

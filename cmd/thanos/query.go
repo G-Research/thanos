@@ -206,7 +206,7 @@ func runQuery(
 	// Start query API + UI HTTP server.
 	{
 		router := route.New()
-		ui.New(logger, nil).Register(router)
+		ui.New(logger, nil, peer).Register(router)
 
 		api := v1.NewAPI(reg, engine, queryableCreator)
 		api.Register(router.WithPrefix("/api/v1"), tracer, logger)

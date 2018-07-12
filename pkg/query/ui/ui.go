@@ -14,6 +14,8 @@ import (
 
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
+	"github.com/hashicorp/memberlist"
+	"github.com/improbable-eng/thanos/pkg/cluster"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/common/route"
@@ -29,6 +31,7 @@ type UI struct {
 	cwd   string
 	birth time.Time
 	now   func() model.Time
+	peer  *cluster.Peer
 }
 
 type thanosVersion struct {
@@ -40,7 +43,7 @@ type thanosVersion struct {
 	GoVersion string `json:"goVersion"`
 }
 
-func New(logger log.Logger, flagsMap map[string]string) *UI {
+func New(logger log.Logger, flagsMap map[string]string, peer *cluster.Peer) *UI {
 	cwd, err := os.Getwd()
 	if err != nil {
 		cwd = "<error retrieving current working directory>"
@@ -51,6 +54,7 @@ func New(logger log.Logger, flagsMap map[string]string) *UI {
 		cwd:      cwd,
 		birth:    time.Now(),
 		now:      model.Now,
+		peer:     peer,
 	}
 }
 
@@ -64,6 +68,7 @@ func (u *UI) Register(r *route.Router) {
 	r.Get("/graph", instrf("graph", u.graph))
 	r.Get("/status", instrf("status", u.status))
 	r.Get("/flags", instrf("flags", u.flags))
+	r.Get("/peers", instrf("peers", u.peers))
 
 	r.Get("/static/*filepath", instrf("static", u.serveStaticAsset))
 	// TODO(bplotka): Consider adding more Thanos related data e.g:
@@ -96,6 +101,32 @@ func (u *UI) status(w http.ResponseWriter, r *http.Request) {
 
 func (u *UI) flags(w http.ResponseWriter, r *http.Request) {
 	u.executeTemplate(w, "flags.html", u.flagsMap)
+}
+
+func (u *UI) peers(w http.ResponseWriter, r *http.Request) {
+	peer := u.peer
+	var peerInfo struct {
+		Joined       bool
+		Self         *memberlist.Node
+		Members      []*memberlist.Node
+		MembersAlive int
+		PeerStates   map[string]cluster.PeerState
+	}
+	info := peer.Info()
+	peerInfo.Joined = info != nil
+	if peerInfo.Joined {
+		peerInfo.Self = info["self"].(*memberlist.Node)
+		peerInfo.Members = info["members"].([]*memberlist.Node)
+		peerInfo.MembersAlive = info["n"].(int)
+		if info["state"] == nil {
+			level.Info(u.logger).Log("msg", "found nil peer state data, filling it in")
+			peerInfo.PeerStates = make(map[string]cluster.PeerState)
+		} else {
+			peerInfo.PeerStates = info["state"].(map[string]cluster.PeerState)
+		}
+	}
+
+	u.executeTemplate(w, "peers.html", peerInfo)
 }
 
 func (u *UI) tmplFuncs() template.FuncMap {
