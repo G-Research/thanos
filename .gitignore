@@ -1,3 +1,4 @@
+/prometheus
 /thanos
 vendor/
 
@@ -11,3 +12,8 @@ data/
 
 # ide
 .idea
+
+# Ignore promu artifacts.
+/.build
+/.release
+/.tarballs

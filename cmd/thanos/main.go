@@ -22,6 +22,7 @@ import (
 	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
 	grpc_recovery "github.com/grpc-ecosystem/go-grpc-middleware/recovery"
 	"github.com/grpc-ecosystem/go-grpc-prometheus"
+	"github.com/improbable-eng/thanos/pkg/runutil"
 	"github.com/improbable-eng/thanos/pkg/tracing"
 	"github.com/oklog/run"
 	"github.com/opentracing/opentracing-go"
@@ -134,7 +135,9 @@ func main() {
 			<-ctx.Done()
 			return ctx.Err()
 		}, func(error) {
-			closeFn()
+			if err := closeFn(); err != nil {
+				level.Warn(logger).Log("msg", "closing tracer failed", "err", err)
+			}
 			cancel()
 		})
 	}
@@ -241,7 +244,7 @@ func metricHTTPListenGroup(g *run.Group, logger log.Logger, reg *prometheus.Regi
 		level.Info(logger).Log("msg", "Listening for metrics", "address", httpBindAddr)
 		return errors.Wrap(http.Serve(l, mux), "serve metrics")
 	}, func(error) {
-		l.Close()
+		runutil.CloseWithLogOnErr(logger, l, "metric listener")
 	})
 	return nil
 }
