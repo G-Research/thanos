@@ -22,7 +22,7 @@ import (
 )
 
 func registerCompact(m map[string]setupFunc, app *kingpin.Application, name string) {
-	cmd := app.Command(name, "continously compacts blocks in an object store bucket")
+	cmd := app.Command(name, "continuously compacts blocks in an object store bucket")
 
 	haltOnError := cmd.Flag("debug.halt-on-error", "Halt the process if a critical compaction error is detected.").
 		Hidden().Default("true").Bool()
@@ -82,7 +82,7 @@ func runCompact(
 
 	reg.MustRegister(halted)
 
-	bkt, closeFn, err := client.NewBucket(&gcsBucket, *s3Config, reg, component)
+	bkt, err := client.NewBucket(logger, &gcsBucket, *s3Config, reg, component)
 	if err != nil {
 		return err
 	}
@@ -90,7 +90,7 @@ func runCompact(
 	// Ensure we close up everything properly.
 	defer func() {
 		if err != nil {
-			closeFn()
+			runutil.CloseWithLogOnErr(logger, bkt, "bucket client")
 		}
 	}()
 
@@ -185,7 +185,7 @@ func runCompact(
 		}
 
 		g.Add(func() error {
-			defer closeFn()
+			defer runutil.CloseWithLogOnErr(logger, bkt, "bucket client")
 
 			if !wait {
 				return f()
