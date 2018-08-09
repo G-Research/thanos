@@ -19,12 +19,12 @@ const OverlappedBlocksIssueID = "overlapped_blocks"
 // No repair is available for this issue.
 func OverlappedBlocksIssue(ctx context.Context, logger log.Logger, bkt objstore.Bucket, _ objstore.Bucket, repair bool, idMatcher func(ulid.ULID) bool) error {
 	if idMatcher != nil {
-		return errors.Errorf("id matching is not supported by issue %s verifier", DuplicatedCompactionIssueID)
+		return errors.Errorf("id matching is not supported by issue %s verifier", OverlappedBlocksIssueID)
 	}
 
 	level.Info(logger).Log("msg", "started verifying issue", "with-repair", repair, "issue", OverlappedBlocksIssueID)
 
-	overlaps, err := fetchOverlaps(ctx, bkt)
+	overlaps, err := fetchOverlaps(ctx, logger, bkt)
 	if err != nil {
 		return errors.Wrap(err, OverlappedBlocksIssueID)
 	}
@@ -44,7 +44,7 @@ func OverlappedBlocksIssue(ctx context.Context, logger log.Logger, bkt objstore.
 	return nil
 }
 
-func fetchOverlaps(ctx context.Context, bkt objstore.Bucket) (map[string]tsdb.Overlaps, error) {
+func fetchOverlaps(ctx context.Context, logger log.Logger, bkt objstore.Bucket) (map[string]tsdb.Overlaps, error) {
 	metas := map[string][]tsdb.BlockMeta{}
 	err := bkt.Iter(ctx, "", func(name string) error {
 		id, ok := block.IsBlockDir(name)
@@ -52,7 +52,7 @@ func fetchOverlaps(ctx context.Context, bkt objstore.Bucket) (map[string]tsdb.Ov
 			return nil
 		}
 
-		m, err := block.DownloadMeta(ctx, bkt, id)
+		m, err := block.DownloadMeta(ctx, logger, bkt, id)
 		if err != nil {
 			return err
 		}

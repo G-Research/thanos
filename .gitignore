@@ -1,3 +1,4 @@
+/prometheus
 /thanos
 vendor/
 
@@ -9,5 +10,10 @@ kube/.minikube
 # Ignore e2e working dirs.
 data/
 
-#ide
-.idea/
+# Ignore promu artifacts.
+/.build
+/.release
+/.tarballs
+
+/.idea
+/*.iml
