@@ -2,13 +2,9 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"io/ioutil"
 	"math"
 	"net"
-	"net/http"
 	"net/url"
-	"path"
 	"sync"
 	"time"
 
@@ -29,11 +25,10 @@ import (
 	"github.com/prometheus/tsdb/labels"
 	"google.golang.org/grpc"
 	kingpin "gopkg.in/alecthomas/kingpin.v2"
-	yaml "gopkg.in/yaml.v2"
 )
 
-func registerSidecar(m map[string]setupFunc, app *kingpin.Application, name string) {
-	cmd := app.Command(name, "sidecar for Prometheus server")
+func registerOpenTSDBSideCar(m map[string]setupFunc, app *kingpin.Application, name string) {
+	cmd := app.Command(name, "sidecar for opentsdb server")
 
 	grpcBindAddr, httpBindAddr, cert, key, clientCA, newPeerFn := regCommonServerFlags(cmd)
 
@@ -61,11 +56,12 @@ func registerSidecar(m map[string]setupFunc, app *kingpin.Application, name stri
 			*reloaderCfgOutputFile,
 			*reloaderRuleDirs,
 		)
+		level.Debug(logger).Log(">>>>", "reguster ")
 		peer, err := newPeerFn(logger, reg, false, "", false)
 		if err != nil {
 			return errors.Wrap(err, "new cluster peer")
 		}
-		return runSidecar(
+		return runOpenTSDBSidecar(
 			g,
 			logger,
 			reg,
@@ -85,7 +81,7 @@ func registerSidecar(m map[string]setupFunc, app *kingpin.Application, name stri
 	}
 }
 
-func runSidecar(
+func runOpenTSDBSidecar(
 	g *run.Group,
 	logger log.Logger,
 	reg *prometheus.Registry,
@@ -102,7 +98,8 @@ func runSidecar(
 	reloader *reloader.Reloader,
 	component string,
 ) error {
-	var metadata = &metadata{
+	return nil
+	var metadata = &opentTSDBMetadata{
 		promURL: promURL,
 
 		// Start out with the full time range. The shipper will constrain it later.
@@ -113,7 +110,7 @@ func runSidecar(
 
 	// Setup all the concurrent groups.
 	{
-		promUp := prometheus.NewGauge(prometheus.GaugeOpts{
+		tsdbUp := prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "thanos_sidecar_prometheus_up",
 			Help: "Boolean indicator whether the sidecar can reach its Prometheus peer.",
 		})
@@ -121,7 +118,7 @@ func runSidecar(
 			Name: "thanos_sidecar_last_heartbeat_success_time_seconds",
 			Help: "Second timestamp of the last successful heartbeat.",
 		})
-		reg.MustRegister(promUp, lastHeartbeat)
+		reg.MustRegister(tsdbUp, lastHeartbeat)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		g.Add(func() error {
@@ -133,11 +130,11 @@ func runSidecar(
 						"msg", "failed to fetch initial external labels. Is Prometheus running? Retrying",
 						"err", err,
 					)
-					promUp.Set(0)
+					tsdbUp.Set(0)
 					return err
 				}
 
-				promUp.Set(1)
+				tsdbUp.Set(1)
 				lastHeartbeat.Set(float64(time.Now().UnixNano()) / 1e9)
 				return nil
 			})
@@ -167,12 +164,12 @@ func runSidecar(
 
 				if err := metadata.UpdateLabels(iterCtx, logger); err != nil {
 					level.Warn(logger).Log("msg", "heartbeat failed", "err", err)
-					promUp.Set(0)
+					tsdbUp.Set(0)
 				} else {
 					// Update gossip.
 					peer.SetLabels(metadata.LabelsPB())
 
-					promUp.Set(1)
+					tsdbUp.Set(1)
 					lastHeartbeat.Set(float64(time.Now().UnixNano()) / 1e9)
 				}
 
@@ -201,10 +198,7 @@ func runSidecar(
 		}
 		logger := log.With(logger, "component", "sidecar")
 
-		var client http.Client
-
-		promStore, err := store.NewPrometheusStore(
-			logger, &client, promURL, metadata.Labels, metadata.Timestamps)
+		promStore, err := store.NewOpenTSDBStore(logger)
 		if err != nil {
 			return errors.Wrap(err, "create Prometheus store")
 		}
@@ -279,9 +273,10 @@ func runSidecar(
 
 	level.Info(logger).Log("msg", "starting sidecar", "peer", peer.Name())
 	return nil
+
 }
 
-type metadata struct {
+type opentTSDBMetadata struct {
 	promURL *url.URL
 
 	mtx    sync.Mutex
@@ -290,7 +285,7 @@ type metadata struct {
 	labels labels.Labels
 }
 
-func (s *metadata) UpdateLabels(ctx context.Context, logger log.Logger) error {
+func (s *opentTSDBMetadata) UpdateLabels(ctx context.Context, logger log.Logger) error {
 	elset, err := queryExternalLabels(ctx, logger, s.promURL)
 	if err != nil {
 		return err
@@ -303,7 +298,7 @@ func (s *metadata) UpdateLabels(ctx context.Context, logger log.Logger) error {
 	return nil
 }
 
-func (s *metadata) UpdateTimestamps(mint int64, maxt int64) {
+func (s *opentTSDBMetadata) UpdateTimestamps(mint int64, maxt int64) {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
@@ -311,14 +306,14 @@ func (s *metadata) UpdateTimestamps(mint int64, maxt int64) {
 	s.maxt = maxt
 }
 
-func (s *metadata) Labels() labels.Labels {
+func (s *opentTSDBMetadata) Labels() labels.Labels {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
 	return s.labels
 }
 
-func (s *metadata) LabelsPB() []storepb.Label {
+func (s *opentTSDBMetadata) LabelsPB() []storepb.Label {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
@@ -332,51 +327,9 @@ func (s *metadata) LabelsPB() []storepb.Label {
 	return lset
 }
 
-func (s *metadata) Timestamps() (mint int64, maxt int64) {
+func (s *opentTSDBMetadata) Timestamps() (mint int64, maxt int64) {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
 	return s.mint, s.maxt
-}
-
-func queryExternalLabels(ctx context.Context, logger log.Logger, base *url.URL) (labels.Labels, error) {
-	u := *base
-	u.Path = path.Join(u.Path, "/api/v1/status/config")
-
-	req, err := http.NewRequest("GET", u.String(), nil)
-	if err != nil {
-		return nil, errors.Wrap(err, "create request")
-	}
-	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
-	if err != nil {
-		return nil, errors.Wrapf(err, "request config against %s", u.String())
-	}
-	defer runutil.CloseWithLogOnErr(logger, resp.Body, "query body")
-
-	b, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, errors.Errorf("failed to read body")
-	}
-
-	if resp.StatusCode != 200 {
-		return nil, errors.Errorf("got non-200 response code: %v, response: %v", resp.StatusCode, string(b))
-	}
-
-	var d struct {
-		Data struct {
-			YAML string `json:"yaml"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(b, &d); err != nil {
-		return nil, errors.Wrapf(err, "unmarshal response: %v", string(b))
-	}
-	var cfg struct {
-		Global struct {
-			ExternalLabels map[string]string `yaml:"external_labels"`
-		} `yaml:"global"`
-	}
-	if err := yaml.Unmarshal([]byte(d.Data.YAML), &cfg); err != nil {
-		return nil, errors.Wrapf(err, "parse Prometheus config: %v", d.Data.YAML)
-	}
-	return labels.FromMap(cfg.Global.ExternalLabels), nil
 }
