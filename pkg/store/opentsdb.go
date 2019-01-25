@@ -5,13 +5,16 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"time"
 
 	//these two will be merged
 	opentsdb "github.com/bluebreezecf/opentsdb-goclient/client"
 	log "github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
 	"github.com/improbable-eng/thanos/pkg/opentsdbclient"
+	"github.com/improbable-eng/thanos/pkg/store/prompb"
 	"github.com/improbable-eng/thanos/pkg/store/storepb"
+	"github.com/prometheus/tsdb/chunkenc"
 )
 
 // TODO: Either move opentsdb to an other package or use an existing one
@@ -45,9 +48,11 @@ func (store *OpenTSDBStore) Series(
 	req *storepb.SeriesRequest,
 	server storepb.Store_SeriesServer) error {
 	level.Debug(store.logger).Log("msg", "opentsdb series")
+	time.Sleep(time.Second * 1)
 	// matcher slice keyed by name // from the influx implementation
 	matchers := make(map[string][]storepb.LabelMatcher)
 	for _, matcher := range req.Matchers {
+		level.Debug(store.logger).Log("matcher", matcher.Value)
 		if _, exists := matchers[matcher.Name]; !exists {
 			matchers[matcher.Name] = make([]storepb.LabelMatcher, 0)
 		}
@@ -63,26 +68,57 @@ func (store *OpenTSDBStore) Series(
 	if m, ok := matchers["__name__"]; ok {
 		query.Queries = []opentsdb.SubQuery{
 			opentsdb.SubQuery{
-				Aggregator: "avg",
+				Aggregator: "sum",
 				Metric:     m[0].Value,
 			},
 		}
-		level.Debug(store.logger).Log("msg", query.Queries[0])
+		level.Debug(store.logger).Log("msg", query.Queries[0].Metric)
 	}
 	resp, err := store.openTSDBClient.Query(query)
 	if err != nil {
 		level.Debug(store.logger).Log("msg", err.Error())
 	}
 	level.Debug(store.logger).Log("msg", resp)
+
+	// now we know where our data is
+	samples := make([]prompb.Sample, 0)
+	var tags map[string]string
+	for _, respI := range resp.QueryRespCnts {
+		level.Debug(store.logger).Log("metrics", respI.Metric)
+		for _, dp := range respI.GetDataPoints() {
+			level.Debug(store.logger).Log("ts", dp.Timestamp, "v", dp.Value)
+			samples = append(samples, prompb.Sample{Timestamp: dp.Timestamp, Value: dp.Value.(float64)})
+		}
+		tags = respI.Tags
+	}
+	seriesLabels := make([]storepb.Label, len(tags))
+	i := 0
+	for k, v := range tags {
+		seriesLabels[i] = storepb.Label{Name: k, Value: v}
+		i++
+	}
+	seriesLabels = append(seriesLabels, storepb.Label{Name: "__name__", Value: matchers["__name__"][0].Value})
+	enc, cb, err := encodeChunk(samples)
+	if err != nil {
+		level.Debug(store.logger).Log("err", err.Error())
+	}
+	level.Debug(store.logger).Log("DATA", string(cb))
+
 	res := storepb.NewSeriesResponse(&storepb.Series{
-		Labels: nil,
+		Labels: seriesLabels,
 		Chunks: []storepb.AggrChunk{{
-			MinTime: 1548324852,
-			MaxTime: 1548324952,
-			Raw:     nil,
+			MinTime: samples[0].Timestamp,
+			MaxTime: samples[len(samples)-1].Timestamp,
+			Raw:     &storepb.Chunk{Type: enc, Data: cb},
 		}},
 	})
-	server.Send(res)
+	level.Debug(store.logger).Log("SEND", res)
+	if err := server.Send(res); err != nil {
+		level.Debug(store.logger).Log("msg", "Error sending series", "err", err)
+		return err
+	} else {
+		level.Debug(store.logger).Log("msg", "fine", "err", err)
+	}
 	return nil
 }
 
@@ -138,4 +174,18 @@ func (store *OpenTSDBStore) LabelValues(
 	}
 
 	return &resp, nil
+}
+
+// encodeChunk translates the sample pairs into a chunk.
+func encodeChunk(ss []prompb.Sample) (storepb.Chunk_Encoding, []byte, error) {
+	c := chunkenc.NewXORChunk()
+
+	a, err := c.Appender()
+	if err != nil {
+		return 0, nil, err
+	}
+	for _, s := range ss {
+		a.Append(int64(s.Timestamp), float64(s.Value))
+	}
+	return storepb.Chunk_XOR, c.Bytes(), nil
 }

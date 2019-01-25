@@ -15,20 +15,20 @@ import (
 
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
-	"github.com/grpc-ecosystem/go-grpc-middleware"
-	"github.com/grpc-ecosystem/go-grpc-prometheus"
+	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
+	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
 	"github.com/improbable-eng/thanos/pkg/cluster"
 	"github.com/improbable-eng/thanos/pkg/discovery/cache"
 	"github.com/improbable-eng/thanos/pkg/discovery/dns"
 	"github.com/improbable-eng/thanos/pkg/query"
-	"github.com/improbable-eng/thanos/pkg/query/api"
+	v1 "github.com/improbable-eng/thanos/pkg/query/api"
 	"github.com/improbable-eng/thanos/pkg/runutil"
 	"github.com/improbable-eng/thanos/pkg/store"
 	"github.com/improbable-eng/thanos/pkg/store/storepb"
 	"github.com/improbable-eng/thanos/pkg/tracing"
 	"github.com/improbable-eng/thanos/pkg/ui"
 	"github.com/oklog/run"
-	"github.com/opentracing/opentracing-go"
+	opentracing "github.com/opentracing/opentracing-go"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/route"
@@ -38,7 +38,7 @@ import (
 	"github.com/prometheus/tsdb/labels"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"gopkg.in/alecthomas/kingpin.v2"
+	kingpin "gopkg.in/alecthomas/kingpin.v2"
 )
 
 // registerQuery registers a query command.

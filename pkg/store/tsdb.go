@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/go-kit/kit/log"
+	"github.com/go-kit/kit/log/level"
 	"github.com/improbable-eng/thanos/pkg/runutil"
 	"github.com/improbable-eng/thanos/pkg/store/storepb"
 	"github.com/pkg/errors"
@@ -83,6 +84,7 @@ func (s *TSDBStore) Series(r *storepb.SeriesRequest, srv storepb.Store_SeriesSer
 	defer runutil.CloseWithLogOnErr(s.logger, q, "close tsdb querier series")
 
 	set, err := q.Select(matchers...)
+	level.Debug(s.logger).Log("set", set)
 	if err != nil {
 		return status.Error(codes.Internal, err.Error())
 	}

@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/go-kit/kit/log/level"
+
 	"time"
 
 	"github.com/go-kit/kit/log"
@@ -122,11 +124,11 @@ type seriesServer struct {
 func (s *seriesServer) Send(r *storepb.SeriesResponse) error {
 	if r.GetWarning() != "" {
 		s.warnings = append(s.warnings, r.GetWarning())
-		return nil
+		//		return nil
 	}
 
 	if r.GetSeries() == nil {
-		return errors.New("no seriesSet")
+		//return errors.New("no seriesSet")
 	}
 	s.seriesSet = append(s.seriesSet, *r.GetSeries())
 	return nil
@@ -189,14 +191,16 @@ func (q *querier) Select(params *storage.SelectParams, ms ...*labels.Matcher) (s
 		Aggregates:              queryAggrs,
 		PartialResponseDisabled: !q.partialResponse,
 	}, resp); err != nil {
+		level.Debug(q.logger).Log("msg", "serues error")
 		return nil, errors.Wrap(err, "proxy Series()")
 	}
-
+	level.Debug(q.logger).Log("msg", "OK serues error")
 	for _, w := range resp.warnings {
 		q.warningReporter(errors.New(w))
 	}
-
+	level.Debug(q.logger).Log("chunk", resp.seriesSet[0].String())
 	if !q.isDedupEnabled() {
+		level.Debug(q.logger).Log("msg", "retunr without dedpop")
 		// Return data without any deduplication.
 		return promSeriesSet{
 			mint: q.mint,

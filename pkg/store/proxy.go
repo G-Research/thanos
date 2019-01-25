@@ -97,6 +97,7 @@ func (s ctxRespSender) send(r *storepb.SeriesResponse) {
 // Series returns all series for a requested time range and label matcher. Requested series are taken from other
 // stores and proxied to RPC client. NOTE: Resulted data are not trimmed exactly to min and max time range.
 func (s *ProxyStore) Series(r *storepb.SeriesRequest, srv storepb.Store_SeriesServer) error {
+	level.Debug(s.logger).Log("msg", "from series ")
 	match, newMatchers, err := labelsMatches(s.selectorLabels, r.Matchers)
 	if err != nil {
 		return status.Error(codes.InvalidArgument, err.Error())
@@ -146,12 +147,14 @@ func (s *ProxyStore) Series(r *storepb.SeriesRequest, srv storepb.Store_SeriesSe
 			// NOTE: all matchers are validated in labelsMatches method so we explicitly ignore error.
 			if ok, _ := storeMatches(st, r.MinTime, r.MaxTime, r.Matchers...); !ok {
 				storeDebugMsgs = append(storeDebugMsgs, fmt.Sprintf("store %s filtered out", st))
+				level.Error(s.logger).Log("msg", "SKIP store")
 				continue
 			}
 			storeDebugMsgs = append(storeDebugMsgs, fmt.Sprintf("store %s queried", st))
 
 			sc, err := st.Series(gctx, r)
 			if err != nil {
+				level.Error(s.logger).Log("err", err) //, "msg", "partial response disabled; aborting request")
 				storeID := fmt.Sprintf("%v", storepb.LabelsToString(st.Labels()))
 				if storeID == "" {
 					storeID = "Store Gateway"
@@ -181,16 +184,21 @@ func (s *ProxyStore) Series(r *storepb.SeriesRequest, srv storepb.Store_SeriesSe
 
 		mergedSet := storepb.MergeSeriesSets(seriesSet...)
 		for mergedSet.Next() {
+
 			var series storepb.Series
 			series.Labels, series.Chunks = mergedSet.At()
 			respSender.send(storepb.NewSeriesResponse(&series))
 		}
+
 		return mergedSet.Err()
 	})
 
 	for resp := range respRecv {
 		if err := srv.Send(resp); err != nil {
+			level.Debug(s.logger).Log("err", "err")
 			return status.Error(codes.Unknown, errors.Wrap(err, "send series response").Error())
+		} else {
+			level.Debug(s.logger).Log("err", err)
 		}
 	}
 
@@ -198,6 +206,7 @@ func (s *ProxyStore) Series(r *storepb.SeriesRequest, srv storepb.Store_SeriesSe
 		level.Error(s.logger).Log("err", err)
 		return err
 	}
+	level.Debug(s.logger).Log("msg", "return from series ")
 	return nil
 
 }

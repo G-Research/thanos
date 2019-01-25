@@ -655,6 +655,7 @@ type storeSeriesServer struct {
 }
 
 func (x *storeSeriesServer) Send(m *SeriesResponse) error {
+
 	return x.ServerStream.SendMsg(m)
 }
 

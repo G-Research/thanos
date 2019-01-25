@@ -10,12 +10,9 @@ import (
 
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
-	"github.com/improbable-eng/thanos/pkg/block"
 	"github.com/improbable-eng/thanos/pkg/cluster"
-	"github.com/improbable-eng/thanos/pkg/objstore/client"
 	"github.com/improbable-eng/thanos/pkg/reloader"
 	"github.com/improbable-eng/thanos/pkg/runutil"
-	"github.com/improbable-eng/thanos/pkg/shipper"
 	"github.com/improbable-eng/thanos/pkg/store"
 	"github.com/improbable-eng/thanos/pkg/store/storepb"
 	"github.com/oklog/run"
@@ -38,17 +35,16 @@ func registerOpenTSDBSideCar(m map[string]setupFunc, app *kingpin.Application, n
 	dataDir := cmd.Flag("tsdb.path", "Data directory of TSDB.").
 		Default("./data").String()
 
-	reloaderCfgFile := cmd.Flag("reloader.config-file", "Config file watched by the reloader.").
-		Default("").String()
+	reloaderCfgFile := cmd.Flag("reloader.config-file", "Config file watched by the reloader.").Default("").String()
 
-	reloaderCfgOutputFile := cmd.Flag("reloader.config-envsubst-file", "Output file for environment variable substituted config file.").
-		Default("").String()
+	reloaderCfgOutputFile := cmd.Flag("reloader.config-envsubst-file", "Output file for environment variable substituted config file.").Default("").String()
 
 	reloaderRuleDirs := cmd.Flag("reloader.rule-dir", "Rule directories for the reloader to refresh (repeated field).").Strings()
 
 	objStoreConfig := regCommonObjStoreFlags(cmd, "")
 
 	m[name] = func(g *run.Group, logger log.Logger, reg *prometheus.Registry, tracer opentracing.Tracer, _ bool) error {
+
 		rl := reloader.New(
 			log.With(logger, "component", "reloader"),
 			reloader.ReloadURLFromBase(*promURL),
@@ -56,6 +52,7 @@ func registerOpenTSDBSideCar(m map[string]setupFunc, app *kingpin.Application, n
 			*reloaderCfgOutputFile,
 			*reloaderRuleDirs,
 		)
+
 		level.Debug(logger).Log(">>>>", "reguster ")
 		peer, err := newPeerFn(logger, reg, false, "", false)
 		if err != nil {
@@ -98,8 +95,9 @@ func runOpenTSDBSidecar(
 	reloader *reloader.Reloader,
 	component string,
 ) error {
-	return nil
+	logger.Log("msg", "run opentsdbside car")
 	var metadata = &opentTSDBMetadata{
+		logger:  logger,
 		promURL: promURL,
 
 		// Start out with the full time range. The shipper will constrain it later.
@@ -122,6 +120,7 @@ func runOpenTSDBSidecar(
 
 		ctx, cancel := context.WithCancel(context.Background())
 		g.Add(func() error {
+			level.Debug(logger).Log("msg", "inner func called")
 			// Blocking query of external labels before joining as a Source Peer into gossip.
 			// We retry infinitely until we reach and fetch labels from our Prometheus.
 			err := runutil.Retry(2*time.Second, ctx.Done(), func() error {
@@ -149,7 +148,7 @@ func runOpenTSDBSidecar(
 			// New gossip cluster.
 			mint, maxt := metadata.Timestamps()
 			if err = peer.Join(cluster.PeerTypeSource, cluster.PeerMetadata{
-				Labels:  metadata.LabelsPB(),
+				Labels:  metadata.LabelsPB(logger),
 				MinTime: mint,
 				MaxTime: maxt,
 			}); err != nil {
@@ -167,7 +166,7 @@ func runOpenTSDBSidecar(
 					tsdbUp.Set(0)
 				} else {
 					// Update gossip.
-					peer.SetLabels(metadata.LabelsPB())
+					peer.SetLabels(metadata.LabelsPB(logger))
 
 					tsdbUp.Set(1)
 					lastHeartbeat.Set(float64(time.Now().UnixNano()) / 1e9)
@@ -180,6 +179,7 @@ func runOpenTSDBSidecar(
 			peer.Close(2 * time.Second)
 		})
 	}
+	logger.Log("function added")
 	{
 		ctx, cancel := context.WithCancel(context.Background())
 		g.Add(func() error {
@@ -188,7 +188,9 @@ func runOpenTSDBSidecar(
 			cancel()
 		})
 	}
+	logger.Log("msg", "cancel created")
 	if err := metricHTTPListenGroup(g, logger, reg, httpBindAddr); err != nil {
+		logger.Log("error", "cancel created")
 		return err
 	}
 	{
@@ -218,59 +220,6 @@ func runOpenTSDBSidecar(
 			runutil.CloseWithLogOnErr(logger, l, "store gRPC listener")
 		})
 	}
-
-	var uploads = true
-
-	bucketConfig, err := objStoreConfig.Content()
-	if err != nil {
-		return err
-	}
-
-	// The background shipper continuously scans the data directory and uploads
-	// new blocks to Google Cloud Storage or an S3-compatible storage service.
-	bkt, err := client.NewBucket(logger, bucketConfig, reg, component)
-	if err != nil && err != client.ErrNotFound {
-		return err
-	}
-
-	if err == client.ErrNotFound {
-		level.Info(logger).Log("msg", "No supported bucket was configured, uploads will be disabled")
-		uploads = false
-	}
-
-	if uploads {
-		// Ensure we close up everything properly.
-		defer func() {
-			if err != nil {
-				runutil.CloseWithLogOnErr(logger, bkt, "bucket client")
-			}
-		}()
-
-		s := shipper.New(logger, nil, dataDir, bkt, metadata.Labels, block.SidecarSource)
-		ctx, cancel := context.WithCancel(context.Background())
-
-		g.Add(func() error {
-			defer runutil.CloseWithLogOnErr(logger, bkt, "bucket client")
-
-			return runutil.Repeat(30*time.Second, ctx.Done(), func() error {
-				s.Sync(ctx)
-
-				minTime, _, err := s.Timestamps()
-				if err != nil {
-					level.Warn(logger).Log("msg", "reading timestamps failed", "err", err)
-				} else {
-					metadata.UpdateTimestamps(minTime, math.MaxInt64)
-
-					mint, maxt := metadata.Timestamps()
-					peer.SetTimestamps(mint, maxt)
-				}
-				return nil
-			})
-		}, func(error) {
-			cancel()
-		})
-	}
-
 	level.Info(logger).Log("msg", "starting sidecar", "peer", peer.Name())
 	return nil
 
@@ -278,14 +227,15 @@ func runOpenTSDBSidecar(
 
 type opentTSDBMetadata struct {
 	promURL *url.URL
-
-	mtx    sync.Mutex
-	mint   int64
-	maxt   int64
-	labels labels.Labels
+	logger  log.Logger
+	mtx     sync.Mutex
+	mint    int64
+	maxt    int64
+	labels  labels.Labels
 }
 
 func (s *opentTSDBMetadata) UpdateLabels(ctx context.Context, logger log.Logger) error {
+	level.Debug(logger).Log("msg", "update labels")
 	elset, err := queryExternalLabels(ctx, logger, s.promURL)
 	if err != nil {
 		return err
@@ -299,6 +249,7 @@ func (s *opentTSDBMetadata) UpdateLabels(ctx context.Context, logger log.Logger)
 }
 
 func (s *opentTSDBMetadata) UpdateTimestamps(mint int64, maxt int64) {
+	level.Debug(s.logger).Log("msg", "lablepb")
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
@@ -307,13 +258,15 @@ func (s *opentTSDBMetadata) UpdateTimestamps(mint int64, maxt int64) {
 }
 
 func (s *opentTSDBMetadata) Labels() labels.Labels {
+	level.Debug(s.logger).Log("msg", "lablepb")
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
 	return s.labels
 }
 
-func (s *opentTSDBMetadata) LabelsPB() []storepb.Label {
+func (s *opentTSDBMetadata) LabelsPB(logger log.Logger) []storepb.Label {
+	level.Debug(logger).Log("msg", "lablepb")
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
