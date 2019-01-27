@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"regexp"
-	"time"
 
 	//these two will be merged
 	opentsdb "github.com/bluebreezecf/opentsdb-goclient/client"
@@ -15,6 +14,7 @@ import (
 	"github.com/improbable-eng/thanos/pkg/store/prompb"
 	"github.com/improbable-eng/thanos/pkg/store/storepb"
 	"github.com/prometheus/tsdb/chunkenc"
+	"github.com/prometheus/tsdb/labels"
 )
 
 // TODO: Either move opentsdb to an other package or use an existing one
@@ -22,13 +22,20 @@ import (
 type OpenTSDBStore struct {
 	openTSDBClient opentsdbclient.OpenTSDBClient
 	logger         log.Logger
+	timestamps     func() (int64, int64)
+	externalLabels labels.Labels
 }
 
-func NewOpenTSDBStore(logger log.Logger) (*OpenTSDBStore, error) {
+func NewOpenTSDBStore(url string,
+	logger log.Logger,
+	timestamps func() (int64, int64),
+	externalLabels labels.Labels) (*OpenTSDBStore, error) {
 	level.Debug(logger).Log("msg", "new opentsdb store has been created")
 	return &OpenTSDBStore{
-		openTSDBClient: opentsdbclient.NewOpenTSDBClient("ec2-3-88-64-48.compute-1.amazonaws.com:4242"),
+		openTSDBClient: opentsdbclient.NewOpenTSDBClient(url),
 		logger:         log.With(logger, "component", "opentsdb"),
+		timestamps:     timestamps,
+		externalLabels: externalLabels,
 	}, nil
 }
 
@@ -36,19 +43,26 @@ func (tsdb *OpenTSDBStore) Info(
 	ctx context.Context,
 	req *storepb.InfoRequest) (*storepb.InfoResponse, error) {
 	level.Debug(tsdb.logger).Log("msg", "call opentsdb info")
-	info := storepb.InfoResponse{
-		MinTime: 0,
-		MaxTime: math.MaxInt64,
-		Labels:  []storepb.Label{storepb.Label{Name: "infokey", Value: "infoValue"}},
+	mint, maxt := tsdb.timestamps()
+	res := storepb.InfoResponse{
+		MinTime: mint,
+		MaxTime: maxt,
+		Labels:  make([]storepb.Label, 0, len(tsdb.externalLabels)),
 	}
-	return &info, nil
+	for _, l := range tsdb.externalLabels {
+		level.Debug(tsdb.logger).Log("lables.name", l.Name, "laels.value", l.Value)
+		res.Labels = append(res.Labels, storepb.Label{
+			Name:  l.Name,
+			Value: l.Value,
+		})
+	}
+	return &res, nil
 }
 
 func (store *OpenTSDBStore) Series(
 	req *storepb.SeriesRequest,
 	server storepb.Store_SeriesServer) error {
 	level.Debug(store.logger).Log("msg", "opentsdb series")
-	time.Sleep(time.Second * 1)
 	// matcher slice keyed by name // from the influx implementation
 	matchers := make(map[string][]storepb.LabelMatcher)
 	for _, matcher := range req.Matchers {
@@ -72,22 +86,18 @@ func (store *OpenTSDBStore) Series(
 				Metric:     m[0].Value,
 			},
 		}
-		level.Debug(store.logger).Log("msg", query.Queries[0].Metric)
 	}
 	resp, err := store.openTSDBClient.Query(query)
 	if err != nil {
-		level.Debug(store.logger).Log("msg", err.Error())
+		level.Error(store.logger).Log("err", err.Error())
+		return err
 	}
-	level.Debug(store.logger).Log("msg", resp)
 
-	// now we know where our data is
 	samples := make([]prompb.Sample, 0)
 	var tags map[string]string
 	for _, respI := range resp.QueryRespCnts {
-		level.Debug(store.logger).Log("metrics", respI.Metric)
 		for _, dp := range respI.GetDataPoints() {
-			level.Debug(store.logger).Log("ts", dp.Timestamp, "v", dp.Value)
-			samples = append(samples, prompb.Sample{Timestamp: dp.Timestamp, Value: dp.Value.(float64)})
+			samples = append(samples, prompb.Sample{Timestamp: dp.Timestamp * 1000, Value: dp.Value.(float64)})
 		}
 		tags = respI.Tags
 	}
@@ -100,10 +110,7 @@ func (store *OpenTSDBStore) Series(
 	seriesLabels = append(seriesLabels, storepb.Label{Name: "__name__", Value: matchers["__name__"][0].Value})
 	enc, cb, err := encodeChunk(samples)
 	if err != nil {
-		level.Debug(store.logger).Log("err", err.Error())
 	}
-	level.Debug(store.logger).Log("DATA", string(cb))
-
 	res := storepb.NewSeriesResponse(&storepb.Series{
 		Labels: seriesLabels,
 		Chunks: []storepb.AggrChunk{{
@@ -112,12 +119,8 @@ func (store *OpenTSDBStore) Series(
 			Raw:     &storepb.Chunk{Type: enc, Data: cb},
 		}},
 	})
-	level.Debug(store.logger).Log("SEND", res)
 	if err := server.Send(res); err != nil {
-		level.Debug(store.logger).Log("msg", "Error sending series", "err", err)
 		return err
-	} else {
-		level.Debug(store.logger).Log("msg", "fine", "err", err)
 	}
 	return nil
 }
@@ -125,7 +128,6 @@ func (store *OpenTSDBStore) Series(
 func (store *OpenTSDBStore) LabelNames(
 	ctx context.Context,
 	req *storepb.LabelNamesRequest) (*storepb.LabelNamesResponse, error) {
-	level.Debug(store.logger).Log("msg", "opentsdb label names ")
 	return &storepb.LabelNamesResponse{
 		// using the suggest api is probably not the best way to do this, but
 		// it was the easiest to implement
@@ -136,13 +138,13 @@ func (store *OpenTSDBStore) LabelNames(
 func (store *OpenTSDBStore) LabelValues(
 	ctx context.Context,
 	req *storepb.LabelValuesRequest) (*storepb.LabelValuesResponse, error) {
-	level.Debug(store.logger).Log("msg", "opentsdb label values ")
 	uidMetaRes := store.openTSDBClient.UIDMetaData(fmt.Sprintf("name:%%22%s%%22", req.Label))
 	if len(uidMetaRes) != 1 {
 		return nil, fmt.Errorf("there should be only one result")
 	}
 	labelUID := uidMetaRes[0].UID
-	tsMetaRes := store.openTSDBClient.TSMetaData(fmt.Sprintf("tsuid:/((.)%%7B6%%7D)%%2B((.)%%7B12%%7D)*%s.*/", labelUID))
+	tsMetaRes := store.openTSDBClient.TSMetaData(
+		fmt.Sprintf("tsuid:/((.)%%7B6%%7D)%%2B((.)%%7B12%%7D)*%s.*/", labelUID))
 	valuesSet := make(map[string]bool)
 	// looking for lalbeUID in tsuids
 	rgx, err := regexp.Compile(labelUID)
@@ -179,7 +181,6 @@ func (store *OpenTSDBStore) LabelValues(
 // encodeChunk translates the sample pairs into a chunk.
 func encodeChunk(ss []prompb.Sample) (storepb.Chunk_Encoding, []byte, error) {
 	c := chunkenc.NewXORChunk()
-
 	a, err := c.Appender()
 	if err != nil {
 		return 0, nil, err

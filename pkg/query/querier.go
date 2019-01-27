@@ -124,11 +124,11 @@ type seriesServer struct {
 func (s *seriesServer) Send(r *storepb.SeriesResponse) error {
 	if r.GetWarning() != "" {
 		s.warnings = append(s.warnings, r.GetWarning())
-		//		return nil
+		return nil
 	}
 
 	if r.GetSeries() == nil {
-		//return errors.New("no seriesSet")
+		return errors.New("no seriesSet")
 	}
 	s.seriesSet = append(s.seriesSet, *r.GetSeries())
 	return nil
@@ -194,7 +194,7 @@ func (q *querier) Select(params *storage.SelectParams, ms ...*labels.Matcher) (s
 		level.Debug(q.logger).Log("msg", "serues error")
 		return nil, errors.Wrap(err, "proxy Series()")
 	}
-	level.Debug(q.logger).Log("msg", "OK serues error")
+	level.Debug(q.logger).Log("msg", "OK serues error", "data", resp.seriesSet[0].String())
 	for _, w := range resp.warnings {
 		q.warningReporter(errors.New(w))
 	}

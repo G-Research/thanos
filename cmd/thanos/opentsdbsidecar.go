@@ -29,7 +29,7 @@ func registerOpenTSDBSideCar(m map[string]setupFunc, app *kingpin.Application, n
 
 	grpcBindAddr, httpBindAddr, cert, key, clientCA, newPeerFn := regCommonServerFlags(cmd)
 
-	promURL := cmd.Flag("prometheus.url", "URL at which to reach Prometheus's API. For better performance use local network.").
+	opentTSDBURL := cmd.Flag("opentsdb.url", "URL at which to reach OpenTSDB's API. For better performance use local network.").
 		Default("http://localhost:9090").URL()
 
 	dataDir := cmd.Flag("tsdb.path", "Data directory of TSDB.").
@@ -47,13 +47,11 @@ func registerOpenTSDBSideCar(m map[string]setupFunc, app *kingpin.Application, n
 
 		rl := reloader.New(
 			log.With(logger, "component", "reloader"),
-			reloader.ReloadURLFromBase(*promURL),
+			reloader.ReloadURLFromBase(*opentTSDBURL),
 			*reloaderCfgFile,
 			*reloaderCfgOutputFile,
 			*reloaderRuleDirs,
 		)
-
-		level.Debug(logger).Log(">>>>", "reguster ")
 		peer, err := newPeerFn(logger, reg, false, "", false)
 		if err != nil {
 			return errors.Wrap(err, "new cluster peer")
@@ -68,7 +66,7 @@ func registerOpenTSDBSideCar(m map[string]setupFunc, app *kingpin.Application, n
 			*key,
 			*clientCA,
 			*httpBindAddr,
-			*promURL,
+			*opentTSDBURL,
 			*dataDir,
 			objStoreConfig,
 			peer,
@@ -88,24 +86,22 @@ func runOpenTSDBSidecar(
 	key string,
 	clientCA string,
 	httpBindAddr string,
-	promURL *url.URL,
+	openTSDBURL *url.URL,
 	dataDir string,
 	objStoreConfig *pathOrContent,
 	peer cluster.Peer,
 	reloader *reloader.Reloader,
 	component string,
 ) error {
-	logger.Log("msg", "run opentsdbside car")
 	var metadata = &opentTSDBMetadata{
-		logger:  logger,
-		promURL: promURL,
-
+		logger:      logger,
+		openTSDBURL: openTSDBURL,
 		// Start out with the full time range. The shipper will constrain it later.
 		// TODO(fabxc): minimum timestamp is never adjusted if shipping is disabled.
 		mint: 0,
 		maxt: math.MaxInt64,
+		//openTSDBClient: opentsdbclient.NewOpenTSDBClient(openTSDBURL.String()),
 	}
-
 	// Setup all the concurrent groups.
 	{
 		tsdbUp := prometheus.NewGauge(prometheus.GaugeOpts{
@@ -120,7 +116,6 @@ func runOpenTSDBSidecar(
 
 		ctx, cancel := context.WithCancel(context.Background())
 		g.Add(func() error {
-			level.Debug(logger).Log("msg", "inner func called")
 			// Blocking query of external labels before joining as a Source Peer into gossip.
 			// We retry infinitely until we reach and fetch labels from our Prometheus.
 			err := runutil.Retry(2*time.Second, ctx.Done(), func() error {
@@ -179,7 +174,6 @@ func runOpenTSDBSidecar(
 			peer.Close(2 * time.Second)
 		})
 	}
-	logger.Log("function added")
 	{
 		ctx, cancel := context.WithCancel(context.Background())
 		g.Add(func() error {
@@ -188,9 +182,7 @@ func runOpenTSDBSidecar(
 			cancel()
 		})
 	}
-	logger.Log("msg", "cancel created")
 	if err := metricHTTPListenGroup(g, logger, reg, httpBindAddr); err != nil {
-		logger.Log("error", "cancel created")
 		return err
 	}
 	{
@@ -198,9 +190,10 @@ func runOpenTSDBSidecar(
 		if err != nil {
 			return errors.Wrap(err, "listen API address")
 		}
-		logger := log.With(logger, "component", "sidecar")
-
-		promStore, err := store.NewOpenTSDBStore(logger)
+		logger := log.With(logger, "component", "opentsdbsidecar")
+		opentTSDBStore, err := store.NewOpenTSDBStore(metadata.openTSDBURL.String(),
+			logger,
+			metadata.Timestamps, metadata.Labels())
 		if err != nil {
 			return errors.Wrap(err, "create Prometheus store")
 		}
@@ -210,7 +203,7 @@ func runOpenTSDBSidecar(
 			return errors.Wrap(err, "setup gRPC server")
 		}
 		s := grpc.NewServer(opts...)
-		storepb.RegisterStoreServer(s, promStore)
+		storepb.RegisterStoreServer(s, opentTSDBStore)
 
 		g.Add(func() error {
 			level.Info(logger).Log("msg", "Listening for StoreAPI gRPC", "address", grpcBindAddr)
@@ -226,30 +219,27 @@ func runOpenTSDBSidecar(
 }
 
 type opentTSDBMetadata struct {
-	promURL *url.URL
-	logger  log.Logger
-	mtx     sync.Mutex
-	mint    int64
-	maxt    int64
-	labels  labels.Labels
+	openTSDBURL *url.URL
+	logger      log.Logger
+	mtx         sync.Mutex
+	mint        int64
+	maxt        int64
+	labels      labels.Labels
 }
 
 func (s *opentTSDBMetadata) UpdateLabels(ctx context.Context, logger log.Logger) error {
-	level.Debug(logger).Log("msg", "update labels")
-	elset, err := queryExternalLabels(ctx, logger, s.promURL)
-	if err != nil {
-		return err
-	}
-
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
-
-	s.labels = elset
+	s.labels = labels.Labels{
+		labels.Label{
+			Value: "host",
+			Name:  s.openTSDBURL.String(),
+		},
+	}
 	return nil
 }
 
 func (s *opentTSDBMetadata) UpdateTimestamps(mint int64, maxt int64) {
-	level.Debug(s.logger).Log("msg", "lablepb")
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
@@ -258,15 +248,12 @@ func (s *opentTSDBMetadata) UpdateTimestamps(mint int64, maxt int64) {
 }
 
 func (s *opentTSDBMetadata) Labels() labels.Labels {
-	level.Debug(s.logger).Log("msg", "lablepb")
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
-
 	return s.labels
 }
 
 func (s *opentTSDBMetadata) LabelsPB(logger log.Logger) []storepb.Label {
-	level.Debug(logger).Log("msg", "lablepb")
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
@@ -283,6 +270,5 @@ func (s *opentTSDBMetadata) LabelsPB(logger log.Logger) []storepb.Label {
 func (s *opentTSDBMetadata) Timestamps() (mint int64, maxt int64) {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
-
 	return s.mint, s.maxt
 }

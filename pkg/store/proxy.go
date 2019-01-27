@@ -97,7 +97,7 @@ func (s ctxRespSender) send(r *storepb.SeriesResponse) {
 // Series returns all series for a requested time range and label matcher. Requested series are taken from other
 // stores and proxied to RPC client. NOTE: Resulted data are not trimmed exactly to min and max time range.
 func (s *ProxyStore) Series(r *storepb.SeriesRequest, srv storepb.Store_SeriesServer) error {
-	level.Debug(s.logger).Log("msg", "from series ")
+	level.Debug(s.logger).Log("msg", "from PRoxyStore series ")
 	match, newMatchers, err := labelsMatches(s.selectorLabels, r.Matchers)
 	if err != nil {
 		return status.Error(codes.InvalidArgument, err.Error())
@@ -194,8 +194,9 @@ func (s *ProxyStore) Series(r *storepb.SeriesRequest, srv storepb.Store_SeriesSe
 	})
 
 	for resp := range respRecv {
+		level.Debug(s.logger).Log("resp", resp.String())
 		if err := srv.Send(resp); err != nil {
-			level.Debug(s.logger).Log("err", "err")
+			level.Debug(s.logger).Log("err", err)
 			return status.Error(codes.Unknown, errors.Wrap(err, "send series response").Error())
 		} else {
 			level.Debug(s.logger).Log("err", err)
@@ -350,7 +351,7 @@ func (s *ProxyStore) LabelValues(ctx context.Context, r *storepb.LabelValuesRequ
 		store := st
 		g.Go(func() error {
 			resp, err := store.LabelValues(gctx, &storepb.LabelValuesRequest{
-				Label: r.Label,
+				Label:                   r.Label,
 				PartialResponseDisabled: r.PartialResponseDisabled,
 			})
 			if err != nil {

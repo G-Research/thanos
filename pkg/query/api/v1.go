@@ -26,8 +26,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-kit/kit/log/level"
-
 	"github.com/NYTimes/gziphandler"
 
 	"github.com/go-kit/kit/log"
@@ -241,44 +239,36 @@ func (api *API) options(r *http.Request) (interface{}, []error, *apiError) {
 }
 
 func (api *API) query(r *http.Request) (interface{}, []error, *apiError) {
-	level.Debug(api.logger).Log("api>>>>>", "query")
 	var ts time.Time
 	if t := r.FormValue("time"); t != "" {
 		var err error
 		ts, err = parseTime(t)
 		if err != nil {
-			level.Debug(api.logger).Log("msg", err)
 			return nil, nil, &apiError{errorBadData, err}
 		}
 	} else {
 		ts = api.now()
 	}
-	level.Debug(api.logger).Log("api>>>>>", "query")
 	ctx := r.Context()
 	if to := r.FormValue("timeout"); to != "" {
 		var cancel context.CancelFunc
 		timeout, err := parseDuration(to)
 		if err != nil {
-			level.Debug(api.logger).Log("msg", err)
 			return nil, nil, &apiError{errorBadData, err}
 		}
 
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	level.Debug(api.logger).Log("api>>>>>", "query")
 	enableDedup, apiErr := api.parseEnableDedupParam(r)
 	if apiErr != nil {
-		level.Debug(api.logger).Log("msg", apiErr)
 		return nil, nil, apiErr
 	}
 
 	enablePartialResponse, apiErr := api.parsePartialResponseParam(r)
 	if apiErr != nil {
-		level.Debug(api.logger).Log("msg", apiErr)
 		return nil, nil, apiErr
 	}
-	level.Debug(api.logger).Log("api>>>>>", "query")
 	var (
 		warnmtx  sync.Mutex
 		warnings []error
@@ -288,7 +278,6 @@ func (api *API) query(r *http.Request) (interface{}, []error, *apiError) {
 		warnings = append(warnings, err)
 		warnmtx.Unlock()
 	}
-	level.Debug(api.logger).Log("api>>>>>", "query")
 	// We are starting promQL tracing span here, because we have no control over promQL code.
 	span, ctx := tracing.StartSpan(r.Context(), "promql_instant_query")
 	defer span.Finish()
@@ -296,15 +285,10 @@ func (api *API) query(r *http.Request) (interface{}, []error, *apiError) {
 	begin := api.now()
 	qry, err := api.queryEngine.NewInstantQuery(api.queryableCreate(enableDedup, 0, enablePartialResponse, warningReporter), r.FormValue("query"), ts)
 	if err != nil {
-		level.Debug(api.logger).Log("msg", err)
 		return nil, nil, &apiError{errorBadData, err}
 	}
-	level.Debug(api.logger).Log("api>>>>>", "query")
 	res := qry.Exec(ctx)
-	level.Debug(api.logger).Log("DATA", res.Value.String())
-	level.Debug(api.logger).Log("api>>>>>", "query <<< ")
 	if res.Err != nil {
-		level.Debug(api.logger).Log("msg", res.Err)
 		switch res.Err.(type) {
 		case promql.ErrQueryCanceled:
 			return nil, nil, &apiError{errorCanceled, res.Err}
@@ -316,7 +300,6 @@ func (api *API) query(r *http.Request) (interface{}, []error, *apiError) {
 		return nil, nil, &apiError{errorExec, res.Err}
 	}
 	api.instantQueryDuration.Observe(time.Since(begin).Seconds())
-	level.Debug(api.logger).Log("api>>>>>", " query return ")
 	return &queryData{
 		ResultType: res.Value.Type(),
 		Result:     res.Value,
@@ -535,30 +518,22 @@ func (api *API) series(r *http.Request) (interface{}, []error, *apiError) {
 		return nil, nil, &apiError{errorExec, err}
 	}
 	defer runutil.CloseWithLogOnErr(api.logger, q, "queryable series")
-
 	var sets []storage.SeriesSet
 	for _, mset := range matcherSets {
 		s, err := q.Select(&storage.SelectParams{}, mset...)
-		level.Debug(api.logger).Log("###rr", s.At().Labels)
 		if err != nil {
-			level.Debug(api.logger).Log("err", err)
 			return nil, nil, &apiError{errorExec, err}
 		}
 		sets = append(sets, s)
 	}
-	level.Debug(api.logger).Log("sets", sets)
 	set := storage.NewMergeSeriesSet(sets)
 	metrics := []labels.Labels{}
 	for set.Next() {
-		level.Debug(api.logger).Log("><><><><>", set.At())
 		metrics = append(metrics, set.At().Labels())
 	}
-	level.Debug(api.logger).Log("metrics", metrics)
 	if set.Err() != nil {
-		level.Debug(api.logger).Log("err", set.Err())
 		return nil, nil, &apiError{errorExec, set.Err()}
 	}
-	level.Debug(api.logger).Log("RETURN", metrics[0].String())
 	return metrics, warnings, nil
 }
 
