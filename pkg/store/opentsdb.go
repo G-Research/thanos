@@ -42,7 +42,6 @@ func NewOpenTSDBStore(url string,
 func (tsdb *OpenTSDBStore) Info(
 	ctx context.Context,
 	req *storepb.InfoRequest) (*storepb.InfoResponse, error) {
-	level.Debug(tsdb.logger).Log("msg", "call opentsdb info")
 	mint, maxt := tsdb.timestamps()
 	res := storepb.InfoResponse{
 		MinTime: mint,
@@ -65,9 +64,13 @@ func (store *OpenTSDBStore) Series(
 	level.Debug(store.logger).Log("msg", "opentsdb series")
 	// matcher slice keyed by name // from the influx implementation
 	matchers := make(map[string][]storepb.LabelMatcher)
+	tags := make(map[string]string)
 	for _, matcher := range req.Matchers {
-		level.Debug(store.logger).Log("matcher", matcher.Value)
 		if _, exists := matchers[matcher.Name]; !exists {
+			//name is a special tag it has to be mapped to metric name
+			if matcher.Name != "__name__" {
+				tags[matcher.Name] = matcher.Value
+			}
 			matchers[matcher.Name] = make([]storepb.LabelMatcher, 0)
 		}
 		matchers[matcher.Name] = append(matchers[matcher.Name], matcher)
@@ -84,6 +87,7 @@ func (store *OpenTSDBStore) Series(
 			opentsdb.SubQuery{
 				Aggregator: "sum",
 				Metric:     m[0].Value,
+				Tags:       tags,
 			},
 		}
 	}
@@ -93,34 +97,34 @@ func (store *OpenTSDBStore) Series(
 		return err
 	}
 
-	samples := make([]prompb.Sample, 0)
-	var tags map[string]string
+	level.Debug(store.logger).Log("err", len(resp.QueryRespCnts))
 	for _, respI := range resp.QueryRespCnts {
+		samples := make([]prompb.Sample, 0)
 		for _, dp := range respI.GetDataPoints() {
 			samples = append(samples, prompb.Sample{Timestamp: dp.Timestamp * 1000, Value: dp.Value.(float64)})
 		}
-		tags = respI.Tags
-	}
-	seriesLabels := make([]storepb.Label, len(tags))
-	i := 0
-	for k, v := range tags {
-		seriesLabels[i] = storepb.Label{Name: k, Value: v}
-		i++
-	}
-	seriesLabels = append(seriesLabels, storepb.Label{Name: "__name__", Value: matchers["__name__"][0].Value})
-	enc, cb, err := encodeChunk(samples)
-	if err != nil {
-	}
-	res := storepb.NewSeriesResponse(&storepb.Series{
-		Labels: seriesLabels,
-		Chunks: []storepb.AggrChunk{{
-			MinTime: samples[0].Timestamp,
-			MaxTime: samples[len(samples)-1].Timestamp,
-			Raw:     &storepb.Chunk{Type: enc, Data: cb},
-		}},
-	})
-	if err := server.Send(res); err != nil {
-		return err
+		seriesLabels := make([]storepb.Label, len(respI.Tags))
+		i := 0
+		for k, v := range respI.Tags {
+			seriesLabels[i] = storepb.Label{Name: k, Value: v}
+			i++
+		}
+		seriesLabels = append(seriesLabels, storepb.Label{Name: "__name__", Value: respI.Metric})
+		enc, cb, err := encodeChunk(samples)
+		if err != nil {
+			level.Debug(store.logger).Log("err", err)
+		}
+		res := storepb.NewSeriesResponse(&storepb.Series{
+			Labels: seriesLabels,
+			Chunks: []storepb.AggrChunk{{
+				MinTime: samples[0].Timestamp,
+				MaxTime: samples[len(samples)-1].Timestamp,
+				Raw:     &storepb.Chunk{Type: enc, Data: cb},
+			}},
+		})
+		if err := server.Send(res); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -138,7 +142,9 @@ func (store *OpenTSDBStore) LabelNames(
 func (store *OpenTSDBStore) LabelValues(
 	ctx context.Context,
 	req *storepb.LabelValuesRequest) (*storepb.LabelValuesResponse, error) {
+	//name:"lable"
 	uidMetaRes := store.openTSDBClient.UIDMetaData(fmt.Sprintf("name:%%22%s%%22", req.Label))
+	store.openTSDBClient.
 	if len(uidMetaRes) != 1 {
 		return nil, fmt.Errorf("there should be only one result")
 	}
