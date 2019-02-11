@@ -7,6 +7,7 @@ import (
 	"regexp"
 
 	//these two will be merged
+	"github.com/bluebreezecf/opentsdb-goclient/client"
 	opentsdb "github.com/bluebreezecf/opentsdb-goclient/client"
 	log "github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
@@ -128,10 +129,14 @@ func (store *OpenTSDBStore) Series(
 func (store *OpenTSDBStore) LabelNames(
 	ctx context.Context,
 	req *storepb.LabelNamesRequest) (*storepb.LabelNamesResponse, error) {
+	resp, err := store.openTSDBClient.Client.Suggest(client.SuggestParam{Type: client.TypeTagk, Q: "", MaxResultNum: math.MaxInt32})
+	if err != nil {
+		return nil, err
+	}
 	return &storepb.LabelNamesResponse{
 		// using the suggest api is probably not the best way to do this, but
 		// it was the easiest to implement
-		Names: store.openTSDBClient.Suggest("tagk", "", math.MaxInt32),
+		Names: resp.ResultInfo,
 	}, nil
 }
 
@@ -171,8 +176,11 @@ func (store *OpenTSDBStore) LabelValues(
 		Values: []string{},
 	}
 	for v, _ := range valuesSet {
-		lableVMeta := store.openTSDBClient.UIDMetaLookup("TAGV", v)
-		resp.Values = append(resp.Values, lableVMeta.Name)
+		qresp, err := store.openTSDBClient.Client.QueryUIDMetaData(map[string]string{"uid": v, "type": client.TypeTagv})
+		if err != nil {
+			return nil, err
+		}
+		resp.Values = append(resp.Values, qresp.Name)
 	}
 
 	return &resp, nil

@@ -86,39 +86,3 @@ func (client *OpenTSDBClient) TSMetaData(query string) []TSMetaData {
 	log.Printf("%v", result)
 	return result.Results
 }
-
-func (client *OpenTSDBClient) UIDMetaLookup(type_ string, uid string) UIDMetaData {
-	apiEP := "api/uid/uidmeta"
-	url := fmt.Sprintf("http://%s/%s?type=%s&uid=%s", client.host, apiEP, type_, uid)
-	log.Printf("GET %s", url)
-	resp, err := http.Get(url)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer resp.Body.Close()
-	var result UIDMetaData
-	err = json.NewDecoder(resp.Body).Decode(&result)
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Printf("%v", result)
-	return result
-}
-
-func (client *OpenTSDBClient) Suggest(type_ string, q string, max int) []string {
-	apiEP := "api/suggest"
-	url := fmt.Sprintf("http://%s/%s?type=%s&q=%s&max=%d", client.host, apiEP, type_, q, max)
-	log.Printf("GET %s", url)
-	resp, err := http.Get(url)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer resp.Body.Close()
-	var result []string
-	err = json.NewDecoder(resp.Body).Decode(&result)
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Printf("%v", result)
-	return result
-}
