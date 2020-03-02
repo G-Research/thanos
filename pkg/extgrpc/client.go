@@ -4,6 +4,7 @@
 package extgrpc
 
 import (
+	"github.com/thanos-io/thanos/pkg/store"
 	"math"
 
 	"github.com/go-kit/kit/log"
@@ -17,6 +18,14 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
+
+func StoreClientGRPCOptsFromTlsConfig(logger log.Logger, reg *prometheus.Registry, tracer opentracing.Tracer, tlsConfig *store.TlsConfig) ([]grpc.DialOption, error) {
+	if tlsConfig != nil {
+		return StoreClientGRPCOpts(logger, reg, tracer, true, tlsConfig.Cert, tlsConfig.Key, tlsConfig.CaCert, tlsConfig.ServerName)
+	} else {
+		return StoreClientGRPCOpts(logger, reg, tracer, false, tlsConfig.Cert, tlsConfig.Key, tlsConfig.CaCert, tlsConfig.ServerName)
+	}
+}
 
 // StoreClientGRPCOpts creates gRPC dial options for connecting to a store client.
 func StoreClientGRPCOpts(logger log.Logger, reg *prometheus.Registry, tracer opentracing.Tracer, secure bool, cert, key, caCert, serverName string) ([]grpc.DialOption, error) {
