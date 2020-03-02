@@ -132,7 +132,7 @@ func registerQuery(m map[string]setupFunc, app *kingpin.Application) {
 
 		var fileSDConfig *file.SDConfig
 		if len(*fileSDFiles) > 0 {
-			fileSDConfig := &file.SDConfig{
+			fileSDConfig = &file.SDConfig{
 				Files:           *fileSDFiles,
 				RefreshInterval: *fileSDInterval,
 			}
@@ -253,7 +253,7 @@ func runQuery(
 			    TlsConfig: &tlsConfig,
 				EndpointsConfig: store.EndpointsConfig {
 					StaticAddresses: storeAddrs,
-					FileSDConfigs: fileSDConfig,
+					FileSDConfigs: []file.SDConfig{*fileSDConfig},
 				},
 			},
 		)
