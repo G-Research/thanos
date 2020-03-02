@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/thanos-io/thanos/pkg/extflag"
-	http_util "github.com/thanos-io/thanos/pkg/http"
 	"math"
 	"net/http"
 	"path"
@@ -210,7 +209,7 @@ func runQuery(
 	storeAddrs []string,
 	enableAutodownsampling bool,
 	enablePartialResponse bool,
-	fileSDConfig file.SDConfig,
+	fileSDConfig *file.SDConfig,
 	storeConfigYAML []byte,
 	dnsSDInterval time.Duration,
 	dnsSDResolver string,
@@ -409,8 +408,15 @@ func runQuery(
 			"web.prefix-header":   webPrefixHeaderName,
 		}
 
+		getAllStoreStatuses := func() []query.StoreStatus {
+			var ret []query.StoreStatus
+			for _, stores := range storeSets {
+				ret = append(ret, stores.GetStoreStatus()...)
+			}
+			return ret
+		}
 		ins := extpromhttp.NewInstrumentationMiddleware(reg)
-		ui.NewQueryUI(logger, reg, stores, flagsMap).Register(router.WithPrefix(webRoutePrefix), ins)
+		ui.NewQueryUI(logger, reg, getAllStoreStatuses, flagsMap).Register(router.WithPrefix(webRoutePrefix), ins)
 
 		api := v1.NewAPI(logger, reg, engine, queryableCreator, enableAutodownsampling, enablePartialResponse, replicaLabels, instantDefaultMaxSourceResolution)
 
