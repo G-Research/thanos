@@ -364,7 +364,6 @@ The configuration format is the following:
 
 [embedmd]:# (../flags/config_query_store.txt yaml)
 ```yaml
-stores:
 - tls_config:
     ca_file: ""
     cert_file: ""

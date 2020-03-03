@@ -226,8 +226,9 @@ func runQuery(
 	reg.MustRegister(duplicatedStores)
 
 
-	var storesConfig *store.Config
+	var storesConfig []store.Config
 	if len(storeConfigYAML) > 0 {
+		level.Info(logger).Log("msg", string(storeConfigYAML))
 		var err error
 		storesConfig, err = store.LoadConfig(storeConfigYAML)
 		if err != nil {
@@ -246,7 +247,7 @@ func runQuery(
 		if fileSDConfig != nil {
 			endpointsConfig.FileSDConfigs = []file.SDConfig{*fileSDConfig}
 		}
-		storeConfig := store.StoresConfig{
+		storeConfig := store.Config{
 			EndpointsConfig: endpointsConfig,
 		}
 		if secure {
@@ -258,9 +259,7 @@ func runQuery(
 			}
 		}
 
-		storesConfig = &store.Config{
-			Stores: []store.StoresConfig{ storeConfig },
-		}
+		storesConfig = []store.Config{ storeConfig }
 	}
 
 	// todo: sml: remove - for debugging
@@ -291,7 +290,7 @@ func runQuery(
 		)
 	)
 
-	for _, config := range storesConfig.Stores {
+	for _, config := range storesConfig {
 		var fileSD *file.Discovery
 		if config.EndpointsConfig.FileSDConfigs != nil {
 			fileSD = file.NewDiscovery(fileSDConfig, logger)

@@ -6,10 +6,6 @@ import (
 )
 
 type Config struct {
-	Stores []StoresConfig    `yaml:"stores"`
-}
-
-type StoresConfig struct {
 	TlsConfig *TlsConfig    `yaml:"tls_config"`
 	EndpointsConfig  EndpointsConfig `yaml:",inline"`
 }
@@ -36,13 +32,9 @@ type EndpointsConfig struct {
 
 func DefaultConfig() Config {
 	return Config{
-		Stores:[]StoresConfig{
-			StoresConfig{
-				EndpointsConfig: EndpointsConfig{
-					StaticAddresses: []string{},
-					FileSDConfigs:   []file.SDConfig{},
-				},
-			},
+		EndpointsConfig: EndpointsConfig{
+			StaticAddresses: []string{},
+			FileSDConfigs:   []file.SDConfig{},
 		},
 	}
 }
@@ -55,8 +47,8 @@ func (c *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
 }
 
 // LoadConfigs loads a list of Config from YAML data.
-func LoadConfig(confYAML []byte) (*Config, error) {
-	var queryCfg *Config
+func LoadConfig(confYAML []byte) ([]Config, error) {
+	var queryCfg []Config
 	if err := yaml.UnmarshalStrict(confYAML, queryCfg); err != nil {
 		return nil, err
 	}
