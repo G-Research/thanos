@@ -23,7 +23,7 @@ func StoreClientGRPCOptsFromTlsConfig(logger log.Logger, reg *prometheus.Registr
 	if tlsConfig != nil {
 		return StoreClientGRPCOpts(logger, reg, tracer, true, tlsConfig.Cert, tlsConfig.Key, tlsConfig.CaCert, tlsConfig.ServerName)
 	} else {
-		return StoreClientGRPCOpts(logger, reg, tracer, false, tlsConfig.Cert, tlsConfig.Key, tlsConfig.CaCert, tlsConfig.ServerName)
+		return StoreClientGRPCOpts(logger, reg, tracer, false, "", "", "", "")
 	}
 }
 

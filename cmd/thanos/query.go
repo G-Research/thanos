@@ -225,10 +225,10 @@ func runQuery(
 	reg.MustRegister(duplicatedStores)
 
 
-	var storeCfg []store.Config
+	var storeConfigs []store.Config
 	if len(storeConfigYAML) > 0 {
 		var err error
-		storeCfg, err = store.LoadConfigs(storeConfigYAML)
+		storeConfigs, err = store.LoadConfigs(storeConfigYAML)
 		if err != nil {
 			return err
 		}
@@ -239,24 +239,25 @@ func runQuery(
 			}
 		}
 
-		var tlsConfig store.TlsConfig
+		endpointsConfig := store.EndpointsConfig {
+			StaticAddresses: storeAddrs,
+		}
+		if fileSDConfig != nil {
+			endpointsConfig.FileSDConfigs = []file.SDConfig{*fileSDConfig}
+		}
+		storeConfig := store.Config{
+			EndpointsConfig: endpointsConfig,
+		}
 		if secure {
-			tlsConfig = store.TlsConfig {
+			storeConfig.TlsConfig = &store.TlsConfig {
 				Cert: cert,
 				Key: key,
 				CaCert: caCert,
 				ServerName: serverName,
 			}
 		}
-		storeCfg = append(storeCfg,
-			store.Config{
-			    TlsConfig: &tlsConfig,
-				EndpointsConfig: store.EndpointsConfig {
-					StaticAddresses: storeAddrs,
-					FileSDConfigs: []file.SDConfig{*fileSDConfig},
-				},
-			},
-		)
+
+		storeConfigs = append(storeConfigs, storeConfig)
 
 	}
 
@@ -283,7 +284,7 @@ func runQuery(
 		)
 	)
 
-	for _, config := range storeCfg {
+	for _, config := range storeConfigs {
 		var fileSD *file.Discovery
 		if config.EndpointsConfig.FileSDConfigs != nil {
 			fileSD = file.NewDiscovery(fileSDConfig, logger)
