@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/thanos-io/thanos/pkg/extflag"
+	"gopkg.in/yaml.v2"
 	"math"
 	"net/http"
 	"path"
@@ -225,10 +226,10 @@ func runQuery(
 	reg.MustRegister(duplicatedStores)
 
 
-	var storeConfigs []store.Config
+	var storesConfig *store.Config
 	if len(storeConfigYAML) > 0 {
 		var err error
-		storeConfigs, err = store.LoadConfigs(storeConfigYAML)
+		storesConfig, err = store.LoadConfig(storeConfigYAML)
 		if err != nil {
 			return err
 		}
@@ -245,7 +246,7 @@ func runQuery(
 		if fileSDConfig != nil {
 			endpointsConfig.FileSDConfigs = []file.SDConfig{*fileSDConfig}
 		}
-		storeConfig := store.Config{
+		storeConfig := store.StoresConfig{
 			EndpointsConfig: endpointsConfig,
 		}
 		if secure {
@@ -257,9 +258,15 @@ func runQuery(
 			}
 		}
 
-		storeConfigs = append(storeConfigs, storeConfig)
-
+		storesConfig = &store.Config{
+			Stores: []store.StoresConfig{ storeConfig },
+		}
 	}
+
+	// todo: sml: remove - for debugging
+	level.Info(logger).Log("msg", fmt.Sprintf("%v", storesConfig))
+	storeBytes, _ := yaml.Marshal(storesConfig)
+	level.Info(logger).Log("msg", string(storeBytes))
 
 	var storeSets []*query.StoreSet
 	var (
@@ -284,7 +291,7 @@ func runQuery(
 		)
 	)
 
-	for _, config := range storeConfigs {
+	for _, config := range storesConfig.Stores {
 		var fileSD *file.Discovery
 		if config.EndpointsConfig.FileSDConfigs != nil {
 			fileSD = file.NewDiscovery(fileSDConfig, logger)
