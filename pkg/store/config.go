@@ -6,26 +6,26 @@ import (
 )
 
 type Config struct {
-	TlsConfig *TlsConfig    `yaml:"tls_config"`
-	EndpointsConfig  EndpointsConfig `yaml:",inline"`
+	TlsConfig *TlsConfig    `yaml:"tls_config" json:"tls_config"`
+	EndpointsConfig  EndpointsConfig `yaml:",inline" json:",inline"`
 }
 
 type TlsConfig struct {
 	// TLS Certificates to use to identify this client to the server
-	Cert string `yaml:"cert_file"`
+	Cert string `yaml:"cert_file" json:"cert_file"`
 	// TLS Key for the client's certificate
-	Key string `yaml:"key_file"`
+	Key string `yaml:"key_file" json:"key_file"`
 	// TLS CA Certificates to use to verify gRPC servers
-	CaCert string `yaml:"ca_file"`
+	CaCert string `yaml:"ca_file" json:"ca_file"`
 	// Server name to verify the hostname on the returned gRPC certificates. See https://tools.ietf.org/html/rfc4366#section-3.1
-	ServerName string `yaml:"server_name"`
+	ServerName string `yaml:"server_name" json:"server_name"`
 }
 
 type EndpointsConfig struct {
 	// List of addresses with DNS prefixes.
-	StaticAddresses []string `yaml:"static_configs"`
+	StaticAddresses []string `yaml:"static_configs" json:"static_configs"`
 	// List of file  configurations (our FileSD supports different DNS lookups).
-	FileSDConfigs []file.SDConfig `yaml:"file_sd_configs"`
+	FileSDConfigs []file.SDConfig `yaml:"file_sd_configs" json:"file_sd_configs"`
 }
 
 
@@ -49,7 +49,7 @@ func (c *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
 // LoadConfigs loads a list of Config from YAML data.
 func LoadConfig(confYAML []byte) ([]Config, error) {
 	var queryCfg []Config
-	if err := yaml.UnmarshalStrict(confYAML, queryCfg); err != nil {
+	if err := yaml.UnmarshalStrict(confYAML, &queryCfg); err != nil {
 		return nil, err
 	}
 	return queryCfg, nil
