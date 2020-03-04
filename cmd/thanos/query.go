@@ -228,7 +228,6 @@ func runQuery(
 
 	var storesConfig []store.Config
 	if len(storeConfigYAML) > 0 {
-		level.Info(logger).Log("msg", string(storeConfigYAML))
 		var err error
 		storesConfig, err = store.LoadConfig(storeConfigYAML)
 		if err != nil {
