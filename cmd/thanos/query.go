@@ -291,7 +291,7 @@ func runQuery(
 
 	for _, config := range storesConfig {
 		var fileSD *file.Discovery
-		if config.EndpointsConfig.FileSDConfigs != nil {
+		if config.EndpointsConfig.FileSDConfigs != nil && len(config.EndpointsConfig.FileSDConfigs) > 0 {
 			fileSD = file.NewDiscovery(fileSDConfig, logger)
 		}
 

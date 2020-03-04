@@ -59,7 +59,6 @@ require (
 	gopkg.in/alecthomas/kingpin.v2 v2.2.6
 	gopkg.in/fsnotify.v1 v1.4.7
 	gopkg.in/yaml.v2 v2.2.7
-	sigs.k8s.io/yaml v1.1.0
 )
 
 // We want to replace the client-go version with a specific commit hash,
