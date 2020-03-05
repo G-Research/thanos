@@ -290,10 +290,6 @@ func runQuery(
 	)
 
 	for _, config := range storesConfig {
-		var fileSD *file.Discovery
-		if config.EndpointsConfig.FileSDConfigs != nil && len(config.EndpointsConfig.FileSDConfigs) > 0 {
-			fileSD = file.NewDiscovery(fileSDConfig, logger)
-		}
 
 		dialOpts, err := extgrpc.StoreClientGRPCOptsFromTlsConfig(logger, reg, tracer, config.TlsConfig)
 		if err != nil {
@@ -341,18 +337,21 @@ func runQuery(
 			})
 		}
 		// Run File Service Discovery and update the store set when the files are modified.
-		if fileSD != nil {
+		if config.EndpointsConfig.FileSDConfigs != nil && len(config.EndpointsConfig.FileSDConfigs) > 0 {
 			var fileSDUpdates chan []*targetgroup.Group
 			ctxRun, cancelRun := context.WithCancel(context.Background())
 
 			fileSDUpdates = make(chan []*targetgroup.Group)
 
-			g.Add(func() error {
-				fileSD.Run(ctxRun, fileSDUpdates)
-				return nil
-			}, func(error) {
-				cancelRun()
-			})
+			for _, fsdConfig := range config.EndpointsConfig.FileSDConfigs {
+				fileSD := file.NewDiscovery(&fsdConfig, logger)
+				g.Add(func() error {
+					fileSD.Run(ctxRun, fileSDUpdates)
+					return nil
+				}, func(error) {
+					cancelRun()
+				})
+			}
 
 			ctxUpdate, cancelUpdate := context.WithCancel(context.Background())
 			g.Add(func() error {
