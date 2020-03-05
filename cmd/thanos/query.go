@@ -11,6 +11,7 @@ import (
 	"math"
 	"net/http"
 	"path"
+	"strconv"
 	"time"
 
 	"github.com/go-kit/kit/log"
@@ -289,9 +290,9 @@ func runQuery(
 		)
 	)
 
-	for _, config := range storesConfig {
+	for configInstance, config := range storesConfig {
 
-		dialOpts, err := extgrpc.StoreClientGRPCOptsFromTlsConfig(logger, reg, tracer, config.TlsConfig)
+		dialOpts, err := extgrpc.StoreClientGRPCOptsFromTlsConfig(logger, strconv.Itoa(configInstance), reg, tracer, config.TlsConfig)
 		if err != nil {
 			return errors.Wrap(err, "building gRPC client")
 		}
@@ -300,13 +301,17 @@ func runQuery(
 		dnsProvider := dns.NewProvider(
 			logger,
 			// todo: sml: looks a bit iffy
-			extprom.WrapRegistererWithPrefix("thanos_querier_store_apis_", reg),
+			extprom.WrapRegistererWith(
+				map[string]string{"config_instance":strconv.Itoa(configInstance)},
+				extprom.WrapRegistererWithPrefix("thanos_querier_store_apis_", reg),
+		    ),
 			dns.ResolverType(dnsSDResolver),
 		)
 
 
 		stores := query.NewStoreSet(
 			logger,
+			strconv.Itoa(configInstance),
 			reg,
 			func() (specs []query.StoreSpec) {
 				// Add DNS resolved addresses from static flags and file SD.
