@@ -137,7 +137,7 @@ func TestQuery(t *testing.T) {
 	}
 
 	// Querier.
-	q, err := e2ethanos.NewQuerier("1", queryCfg)
+	q, err := e2ethanos.NewQuerier("99", queryCfg)
 	testutil.Ok(t, err)
 	testutil.Ok(t, s.StartAndWaitReady(q))
 
