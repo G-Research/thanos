@@ -359,6 +359,7 @@ func runQuery(
 			}
 
 			ctxUpdate, cancelUpdate := context.WithCancel(context.Background())
+			staticAddresses := config.EndpointsConfig.StaticAddresses
 			g.Add(func() error {
 				for {
 					select {
@@ -369,7 +370,7 @@ func runQuery(
 						}
 						fileSDCache.Update(update)
 						stores.Update(ctxUpdate)
-						dnsProvider.Resolve(ctxUpdate, append(fileSDCache.Addresses(), config.EndpointsConfig.StaticAddresses...))
+						dnsProvider.Resolve(ctxUpdate, append(fileSDCache.Addresses(), staticAddresses...))
 					case <-ctxUpdate.Done():
 						return nil
 					}
@@ -382,9 +383,10 @@ func runQuery(
 		// Periodically update the addresses from static flags and file SD by resolving them using DNS SD if necessary.
 		{
 			ctx, cancel := context.WithCancel(context.Background())
+			staticAddresses := config.EndpointsConfig.StaticAddresses
 			g.Add(func() error {
 				return runutil.Repeat(dnsSDInterval, ctx.Done(), func() error {
-					dnsProvider.Resolve(ctx, append(fileSDCache.Addresses(), config.EndpointsConfig.StaticAddresses...))
+					dnsProvider.Resolve(ctx, append(fileSDCache.Addresses(), staticAddresses...))
 					return nil
 				})
 			}, func(error) {
