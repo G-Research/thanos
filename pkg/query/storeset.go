@@ -94,14 +94,14 @@ func newStoreSetNodeCollector(configInstance string) *storeSetNodeCollector {
 		connectionsDesc: prometheus.NewDesc(
 			"thanos_store_nodes_grpc_connections",
 			"Number of gRPC connection to Store APIs. Opened connection means healthy store APIs available for Querier.",
-			[]string{"external_labels", "store_type"}, map[string]string{"configInstance":configInstance},
+			[]string{"external_labels", "store_type"}, map[string]string{"config_instance":configInstance},
 		),
 		// TODO(bwplotka): Obsolete; Replaced by thanos_store_nodes_grpc_connections.
 		// Remove in next minor release.
 		nodeInfoDesc: prometheus.NewDesc(
 			"thanos_store_node_info",
 			"Deprecated, use thanos_store_nodes_grpc_connections instead.",
-			[]string{"external_labels"}, map[string]string{"configInstance":configInstance},
+			[]string{"external_labels"}, map[string]string{"config_instance":configInstance},
 		),
 	}
 }
