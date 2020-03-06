@@ -122,11 +122,13 @@ func TestQuery(t *testing.T) {
 	// Both fileSD and directly by seperate configs
 	queryCfg := []store.Config{
 		{
+			Name: "static",
 			EndpointsConfig: store.EndpointsConfig{
 				StaticAddresses: []string{sidecar1.GRPCNetworkEndpoint(), sidecar2.GRPCNetworkEndpoint(), receiver.GRPCNetworkEndpoint()},
 			},
 		},
 		{
+			Name: "filesd",
 			EndpointsConfig: store.EndpointsConfig{
 				FileSDConfigs: []file.SDConfig{
 					{
