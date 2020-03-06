@@ -129,7 +129,7 @@ func TestQuery(t *testing.T) {
 				FileSDConfigs: []file.SDConfig{
 					{
 						Files: []string{sdFilePath},
-						RefreshInterval: 60,
+						RefreshInterval: model.Duration(time.Minute),
 					},
 				},
 			},
