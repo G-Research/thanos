@@ -90,7 +90,7 @@ func createSDFile(sharedDir string, querierName string, fileSDStoreAddresses []s
 		return "", errors.Wrap(err, "creating query SD config failed")
 	}
 
-	fmt.Printf("filesd.yaml: %s\n", string(b))
+	fmt.Println("filesd.yaml:", string(b))
 
 	return filepath.Join(container, "filesd.yaml"), nil
 }

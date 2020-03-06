@@ -11,7 +11,6 @@ import (
 	"math"
 	"net/http"
 	"path"
-	"strconv"
 	"time"
 
 	"github.com/go-kit/kit/log"
@@ -248,6 +247,7 @@ func runQuery(
 			endpointsConfig.FileSDConfigs = []file.SDConfig{*fileSDConfig}
 		}
 		storeConfig := store.Config{
+			Name: "default",
 			EndpointsConfig: endpointsConfig,
 		}
 		if secure {
@@ -290,9 +290,9 @@ func runQuery(
 		)
 	)
 
-	for configInstance, config := range storesConfig {
+	for _, config := range storesConfig {
 
-		dialOpts, err := extgrpc.StoreClientGRPCOptsFromTlsConfig(logger, strconv.Itoa(configInstance), reg, tracer, config.TlsConfig)
+		dialOpts, err := extgrpc.StoreClientGRPCOptsFromTlsConfig(logger, config.Name, reg, tracer, config.TlsConfig)
 		if err != nil {
 			return errors.Wrap(err, "building gRPC client")
 		}
@@ -302,7 +302,7 @@ func runQuery(
 			logger,
 			// todo: sml: looks a bit iffy
 			extprom.WrapRegistererWith(
-				map[string]string{"config_instance":strconv.Itoa(configInstance)},
+				map[string]string{"config_name":config.Name},
 				extprom.WrapRegistererWithPrefix("thanos_querier_store_apis_", reg),
 		    ),
 			dns.ResolverType(dnsSDResolver),
@@ -311,7 +311,7 @@ func runQuery(
 
 		stores := query.NewStoreSet(
 			logger,
-			strconv.Itoa(configInstance),
+			config.Name,
 			reg,
 			func() (specs []query.StoreSpec) {
 				// Add DNS resolved addresses from static flags and file SD.

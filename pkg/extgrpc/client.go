@@ -34,7 +34,7 @@ func StoreClientGRPCOpts(logger log.Logger, clientInstance *string, reg *prometh
 		[]float64{0.001, 0.01, 0.1, 0.3, 0.6, 1, 3, 6, 9, 20, 30, 60, 90, 120},
 	)
 	if clientInstance != nil {
-		constLabels := map[string]string{"client_instance": *clientInstance}
+		constLabels := map[string]string{"config_name": *clientInstance}
 		grpcMets = grpc_prometheus.NewClientMetrics(grpc_prometheus.WithConstLabels(constLabels))
 		grpcMets.EnableClientHandlingTimeHistogram(
 			grpc_prometheus.WithHistogramConstLabels(constLabels),
